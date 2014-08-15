@@ -6,7 +6,10 @@ x0 = 1.0
 y0 = 1.5
 
 # theta is the angle (in radians) of the direction in which to move
-theta = math.pi/6
+#theta = math.pi/6
+deg = 180
+corrected_deg = deg - 90
+theta = math.radians(corrected_deg)
 
 # r is the distance to move
 r = 2.0
