@@ -62,7 +62,7 @@ hex1 = {
 }
 # we also need to insert the center
 hex1_center = {
-    "loc"
+    "loc" :
     {
         "type": "Point",
         "coordinates": [ centerX , centerY ]
