@@ -1,6 +1,6 @@
 import datetime
 from pymongo import *
-
+import random
 client = MongoClient('candygram',27017)
 db = client.map
 collection = db.hex_tiles
@@ -47,8 +47,13 @@ Y7 = newCY
 centerX = (X1+X2+X3+X4+X5+X6)/6
 centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
 
-print (centerX,centerY)
-print (newCX,newCY)
+print(centerX,centerY)
+print(newCX,newCY)
+
+#starting water value
+rand_water = random.randint(0, 100)
+#starting grass value
+rand_grass = random.randint(0, 100)
 
 hex1 = {
     "loc" :
@@ -56,8 +61,16 @@ hex1 = {
       "type": "Polygon",
       "coordinates": [ [ [ X1 , Y1 ] , [ X2 , Y2 ] , [ X3 , Y3 ] , [ X4 , Y4  ] , [X5 , Y5] , [ X6 , Y6 ] , [ X7 , Y7 ] ] ]
     },
-    "Water": 0,
-    "Grass": 0,
+    "centerXY": [centerX, centerY],
+    "hexcp1": [X1, Y1],
+    "hexcp2": [X2, Y2],
+    "hexcp3": [X3, Y3],
+    "hexcp4": [X4, Y4],
+    "hexcp5": [X5, Y5],
+    "hexcp6": [X6, Y6],
+    "hexcp7": [X7, Y7],
+    "Water": rand_water,
+    "Grass": rand_grass,
     "Created": datetime.datetime.utcnow()
 }
 # we also need to insert the center
@@ -67,13 +80,14 @@ hex1_center = {
         "type": "Point",
         "coordinates": [ centerX , centerY ]
         },
-     "Created": datetime.datetime.utcnow()   
+    "centerXY": [centerX, centerY],
+    "Created": datetime.datetime.utcnow()
 }
 hex_tiles = db.hex_tiles
 hex_tiles_center = db.hex_tiles_center
 tile_id = hex_tiles.insert(hex1)
 center_tile_id = hex_tiles_center.insert(hex1_center)
-print (tile_id)
-print (center_tile_id)
+print(tile_id)
+print(center_tile_id)
 
 # should we put the object id on either of the inserts?
