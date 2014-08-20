@@ -7,7 +7,7 @@ canvas.pack(expand=YES, fill=BOTH)
 #canvas.create_line(100, 200, 200, 300)
 #canvas.create_polygon(0,50,25,0,75,0,100,50,75,100,25,100,0,50)
 
-# new hexagon center starting point not actually center of hexagon
+
 cx = 100
 cy = 100
 
