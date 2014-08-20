@@ -218,7 +218,7 @@ centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
 
 canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7,fill="brown")
 
-# create hexagon top 
+# create hexagon top  right
 newCX = cx +twoseg +oneseg
 newCY = cy - twoseg
 
