@@ -1,3 +1,5 @@
+# Use this to create the initial hexagon in the database
+
 import datetime
 from pymongo import *
 import random
