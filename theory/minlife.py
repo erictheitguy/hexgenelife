@@ -117,7 +117,7 @@ new_hex_center =[]
 
 
 i = 0
-while i < 20:
+while i < 100:
     # direction
     change_dir_amount = random.randint(1, 100)
     change_dir_amount = life_dir_change / change_dir_amount

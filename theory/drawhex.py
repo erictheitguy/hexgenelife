@@ -12,23 +12,25 @@ db = client.map
 hex_tiles_collection = db.hex_tiles
 hex_center_collection = db.hex_tiles_center
 scale_factor = 10
-search_point_x = 14.594419105154401
-search_point_y = 15.159929983317348
+search_point_x = 10
+search_point_y = 10
 
-hex_tiles = hex_tiles_collection.database.command({"geoNear": "hex_tiles", "near": [search_point_x,search_point_y]})
+#hex_tiles = hex_tiles_collection.database.command({"geoNear": "hex_tiles", "near": [search_point_x,search_point_y]})
+hex_tiles = hex_tiles_collection.find({"$and": [ {"centerX": {"$gt":0}},{"centerX": {"$lt":20}}]})
 
-if hex_tiles["stats"]["objectsLoaded"] > 0:
-    print("we found some hexagons",hex_tiles["stats"]["objectsLoaded"])
-    hex_count = hex_tiles["stats"]["objectsLoaded"]
-    for hexagon_tile_found in hex_tiles["results"]:
-        X1,Y1 = hexagon_tile_found["obj"]["hexcp1"]
-        X2,Y2 = hexagon_tile_found["obj"]["hexcp2"]
-        X3,Y3 = hexagon_tile_found["obj"]["hexcp3"]
-        X4,Y4 = hexagon_tile_found["obj"]["hexcp4"]
-        X5,Y5 = hexagon_tile_found["obj"]["hexcp5"]
-        X6,Y6 = hexagon_tile_found["obj"]["hexcp6"]
-        X7,Y7 = hexagon_tile_found["obj"]["hexcp7"]
-        print(hexagon_tile_found["obj"]["centerXY"])
+if hex_tiles.count() > 0:
+    hex_count = hex_tiles.count()
+    print("we found some hexagons ",hex_count)
+
+    for hexagon_tile_found in hex_tiles:
+        X1,Y1 = hexagon_tile_found["hexcp1"]
+        X2,Y2 = hexagon_tile_found["hexcp2"]
+        X3,Y3 = hexagon_tile_found["hexcp3"]
+        X4,Y4 = hexagon_tile_found["hexcp4"]
+        X5,Y5 = hexagon_tile_found["hexcp5"]
+        X6,Y6 = hexagon_tile_found["hexcp6"]
+        X7,Y7 = hexagon_tile_found["hexcp7"]
+        print(hexagon_tile_found["centerXY"])
         # this is so bad
         X1 = X1 * scale_factor
         X2 = X2 * scale_factor

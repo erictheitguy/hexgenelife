@@ -11,8 +11,8 @@ collection = db.hex_tiles
 # in future we should be getting a center point
 # from another hexagon and then drawing a new hexagon
 # based upon an existing one in one of the directions
-cx = 10
-cy = 10
+cx = 17.5
+cy = 15
 
 # sizing of the hexagons
 # change 100 to whatever unit
@@ -64,6 +64,8 @@ hex1 = {
       "coordinates": [ [ [ X1 , Y1 ] , [ X2 , Y2 ] , [ X3 , Y3 ] , [ X4 , Y4  ] , [X5 , Y5] , [ X6 , Y6 ] , [ X7 , Y7 ] ] ]
     },
     "centerXY": [centerX, centerY],
+    "centerX": centerX,
+    "centerY": centerY,
     "hexcp1": [X1, Y1],
     "hexcp2": [X2, Y2],
     "hexcp3": [X3, Y3],
@@ -83,6 +85,8 @@ hex1_center = {
         "coordinates": [ centerX , centerY ]
         },
     "centerXY": [centerX, centerY],
+    "centerX": centerX,
+    "centerY": centerY,
     "Created": datetime.datetime.utcnow()
 }
 hex_tiles = db.hex_tiles
