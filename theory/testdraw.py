@@ -1,24 +1,42 @@
+import math
 from tkinter import *
 
-canvas = Canvas(width=300, height=300, bg='white')  
+canvas_width = 500
+canvas_height = 500
+canvas = Canvas(width=canvas_width, height=canvas_height, bg='white')
 canvas.pack(expand=YES, fill=BOTH)                  
 
 #canvas.create_line(100, 100, 200, 200)             
 #canvas.create_line(100, 200, 200, 300)
 #canvas.create_polygon(0,50,25,0,75,0,100,50,75,100,25,100,0,50)
 
+#lets figure out how to move everything to center it on the canvas
+
+#lets get the center of the canvas
+canvas_center_x = canvas_width /2
+canvas_center_y = canvas_height /2
+
+
 
 cx = 100
 cy = 100
 
+# we will use the above cx and cy as our "center" location
+xdiff = abs(canvas_center_x - cx)
+ydiff = abs(canvas_center_y - cy)
+angle_point = math.degrees(math.atan2(ydiff,xdiff))
+print(xdiff,ydiff)
+
+scale_factor = 1
+
 # sizing of the hexagons
 # change 100 to whatever unit
-oneseg = 100/4
-twoseg = oneseg * 2
+oneseg = (100/4) * scale_factor
+twoseg = (oneseg * 2) * scale_factor
 
 # new CX and CY are actually the hexagon centers
-newCX = cx
-newCY = cy
+newCX = (cx + xdiff) * scale_factor
+newCY = (cy + ydiff) * scale_factor
 
 X1 = newCX - twoseg 
 Y1 = newCY 
@@ -55,8 +73,8 @@ print (newCX,newCY)
 canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7, fill="green")
 
 # create hexagon to bottom right
-newCX = cx + twoseg +oneseg
-newCY = cy + twoseg 
+newCX = ((cx + xdiff) * scale_factor) + twoseg +oneseg
+newCY = ((cy + ydiff) * scale_factor) + twoseg
 
 
 X1 = newCX - twoseg 
@@ -89,8 +107,8 @@ canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7)
 
 # create hexagon bottom
 
-newCX = cx 
-newCY = cy +twoseg +twoseg
+newCX = ((cx + xdiff) * scale_factor)
+newCY = ((cy + ydiff) * scale_factor) +twoseg +twoseg
 
 X1 = newCX - twoseg 
 Y1 = newCY 
@@ -121,8 +139,8 @@ canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7,fill="red")
 
 # create hexagon bottom left
 
-newCX = cx - twoseg -oneseg
-newCY = cy + twoseg 
+newCX = ((cx + xdiff) * scale_factor) - twoseg -oneseg
+newCY = ((cy + ydiff) * scale_factor) + twoseg
 
 
 X1 = newCX - twoseg 
@@ -154,8 +172,8 @@ canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7,fill="blue")
 
 # create hexagon top left
 
-newCX = cx - twoseg -oneseg
-newCY = cy - twoseg 
+newCX = ((cx + xdiff) * scale_factor) - twoseg -oneseg
+newCY = ((cy + ydiff) * scale_factor) - twoseg
 
 
 X1 = newCX - twoseg 
@@ -187,8 +205,8 @@ canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7,fill="purple")
 
 # create hexagon top 
 
-newCX = cx 
-newCY = cy - twoseg - twoseg 
+newCX = ((cx + xdiff) * scale_factor)
+newCY = ((cy + ydiff) * scale_factor) - twoseg - twoseg
 
 
 X1 = newCX - twoseg 
@@ -219,8 +237,8 @@ centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
 canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7,fill="brown")
 
 # create hexagon top  right
-newCX = cx +twoseg +oneseg
-newCY = cy - twoseg
+newCX = ((cx + xdiff) * scale_factor) +twoseg +oneseg
+newCY = ((cy + ydiff) * scale_factor) - twoseg
 
 
 X1 = newCX - twoseg 
