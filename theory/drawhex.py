@@ -16,7 +16,13 @@ search_point_x = 10
 search_point_y = 10
 
 #hex_tiles = hex_tiles_collection.database.command({"geoNear": "hex_tiles", "near": [search_point_x,search_point_y]})
-hex_tiles = hex_tiles_collection.find({"$and": [ {"centerX": {"$gt":0}},{"centerX": {"$lt":20}}]})
+upper_bounding_box_x = search_point_x - 1000
+upper_bounding_box_y = search_point_y + 1000
+lower_bounding_box_x = search_point_x + 1000
+lower_bounding_box_y = search_point_y - 1000
+#hex_tiles = hex_tiles_collection.find({"$and": [ {"centerX": {"$gt": upper_bounding_box_x}},{"centerX": {"$lt": lower_bounding_box_x}},
+                                               #  {"centerY": {"$gt": lower_bounding_box_y}},{"centerY": {"$lt": upper_bounding_box_y}}]})
+hex_tiles = hex_tiles_collection.find()
 
 if hex_tiles.count() > 0:
     hex_count = hex_tiles.count()
