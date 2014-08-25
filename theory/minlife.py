@@ -71,8 +71,6 @@ def insert_hex(ix1,iy1, ix2,iy2, ix3,iy3, ix4,iy4 ,ix5,iy5, ix6,iy6, ix7,iy7, ic
     return hex_insert_id
 
 
-
-
 client = MongoClient('candygram', 27017)
 db = client.map
 
@@ -116,18 +114,18 @@ life_dir_change = 30
 old_hex_poly = []
 old_hex_center = []
 new_hex_poly = []
-new_hex_center =[]
+new_hex_center = []
 
 
 i = 0
-while i < 100:
+while i < 1000:
     # direction
     change_dir_amount = random.randint(1, 100)
     change_dir_amount = life_dir_change / change_dir_amount
     print(change_dir_amount, " <- amount to change dir")
     life_dir += change_dir_amount
     # add if above 360 convert it to 0 - 360
-    print (life_dir, " <- life direction")
+    print(life_dir, " <- life direction")
 
     corrected_deg = 90 - life_dir
     theta = math.radians(corrected_deg)
@@ -154,8 +152,8 @@ while i < 100:
     create_new_poly = False
     point_inside = False
     if hex_search.count() > 0:
-        print("we found some hexagons",hex_search.count())
-        hex_count = hex_search.count()  # I really dont know if i need this?
+        print("we found some hexagons", hex_search.count())
+        hex_count = hex_search.count()  # I really don't know if i need this?
 
         for hexagon_tile_found in hex_search:
             if point_inside: break
@@ -191,14 +189,19 @@ while i < 100:
             # note we always start inside a hexagon so the above var should be set hopefully
 
             #what side of the hexagon are we on?
-            xdiff = old_hex_center[0] - life_loc_x
-            ydiff = old_hex_center[1] - life_loc_y
+            xdiff = life_loc_x - old_hex_center[0]
+            ydiff = life_loc_y - old_hex_center[1]
+            print(xdiff,ydiff, " diffs")
             angle_points = math.degrees(math.atan2(ydiff,xdiff))
-            print(angle_points," unconverted angle")
+            print(angle_points, " unconverted angle")
+            # 180 unconverted is really 270
             if angle_points < 0:
                 angle_points = abs(angle_points) + 90
             else:
                 angle_points = 90 - angle_points
+            if angle_points < 0:
+                angle_points = angle_points + 360
+            print(angle_points, " final angle")
 
 
             print(angle_points, " angle between the two points")
@@ -235,14 +238,14 @@ while i < 100:
                 new_tile_id = insert_hex(X1, Y1, X2, Y2, X3, Y3, X4, Y4, X5, Y5, X6, Y6, X7, Y7, centerX, centerY)
                 old_hex_center[0] = centerX
                 old_hex_center[1] = centerY
-                print(new_tile_id,old_hex_center, "new tile information")
-                point_inside == True
+                print(new_tile_id, old_hex_center, "new tile information")
+                point_inside = True
                 # we now have a new hexagon tile
 
             if angle_points > 30 and angle_points < 90:
                 print("top right")
                 # create hexagon top  right
-                newCX = old_hex_center[0] + hex_twoseg +hex_oneseg
+                newCX = old_hex_center[0] + hex_twoseg + hex_oneseg
                 newCY = old_hex_center[1] + hex_twoseg
 
                 X1 = newCX - hex_twoseg
@@ -279,7 +282,7 @@ while i < 100:
             if angle_points > 90 and angle_points < 150:
                 print("bottom right")
                 # create hexagon to bottom right
-                newCX = old_hex_center[0] +hex_twoseg +hex_oneseg
+                newCX = old_hex_center[0] + hex_twoseg + hex_oneseg
                 newCY = old_hex_center[1] - hex_twoseg
                 X1 = newCX - hex_twoseg
                 Y1 = newCY
@@ -302,7 +305,6 @@ while i < 100:
                 X7 = newCX - hex_twoseg
                 Y7 = newCY
 
-
                 # what is its center?
                 centerX = (X1+X2+X3+X4+X5+X6)/6
                 centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
@@ -310,10 +312,9 @@ while i < 100:
                 old_hex_center[0] = centerX
                 old_hex_center[1] = centerY
                 print(new_tile_id,old_hex_center, "new tile information")
-                point_inside == True
+                point_inside = True
                 # we now have a new hexagon tile
             if angle_points > 150 and angle_points < 210:
-
                 print("bottom")
                 # create hexagon bottom
                 newCX = old_hex_center[0]
@@ -349,7 +350,7 @@ while i < 100:
                 old_hex_center[0] = centerX
                 old_hex_center[1] = centerY
                 print(new_tile_id,old_hex_center, "new tile information")
-                point_inside == True
+                point_inside = True
                 # we now have a new hexagon tile
 
             if angle_points > 210 and angle_points < 270:
@@ -416,17 +417,14 @@ while i < 100:
                 X7 = newCX - hex_twoseg
                 Y7 = newCY
 
-
-
-
                 # what is its center?
                 centerX = (X1+X2+X3+X4+X5+X6)/6
                 centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
                 new_tile_id = insert_hex(X1, Y1, X2, Y2, X3, Y3, X4, Y4, X5, Y5, X6, Y6, X7, Y7, centerX, centerY)
                 old_hex_center[0] = centerX
                 old_hex_center[1] = centerY
-                print(new_tile_id,old_hex_center, "new tile information")
-                point_inside == True
+                print(new_tile_id, old_hex_center, "new tile information")
+                point_inside = True
                 # we now have a new hexagon tile
 
 
@@ -438,6 +436,7 @@ while i < 100:
         # first lets figure out which direction we need to create our
         # new hexagon in
 
-    time.sleep(1)  # sleep for half a second
+    time.sleep(.1)  # sleep for half a second
 
     i += 1
+print ("all done")
