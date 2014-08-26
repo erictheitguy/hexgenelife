@@ -11,8 +11,8 @@ collection = db.hex_tiles
 # in future we should be getting a center point
 # from another hexagon and then drawing a new hexagon
 # based upon an existing one in one of the directions
-cx = 17.5
-cy = 15
+cx = 10
+cy = 10
 
 # sizing of the hexagons
 # change 100 to whatever unit
