@@ -188,16 +188,15 @@ while i < 1000:
             print(old_hex_center, " old hex center to start from") # this should be the last hexagon center I was in
             # note we always start inside a hexagon so the above var should be set hopefully
 
-<<<<<<< .merge_file_a07084
             # what side of the hexagon are we on?
             xdiff = abs(old_hex_center[0] - life_loc_x)
             ydiff = abs(old_hex_center[1] - life_loc_y)
-=======
+
             #what side of the hexagon are we on?
             xdiff = life_loc_x - old_hex_center[0]
             ydiff = life_loc_y - old_hex_center[1]
             print(xdiff,ydiff, " diffs")
->>>>>>> .merge_file_a01060
+
             angle_points = math.degrees(math.atan2(ydiff,xdiff))
             print(angle_points, " unconverted angle")
             # 180 unconverted is really 270
