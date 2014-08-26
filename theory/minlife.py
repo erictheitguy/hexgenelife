@@ -184,7 +184,7 @@ while i < 100:
             print(old_hex_center, " old hex center to start from") # this should be the last hexagon center I was in
             # note we always start inside a hexagon so the above var should be set hopefully
 
-            #what side of the hexagon are we on?
+            # what side of the hexagon are we on?
             xdiff = abs(old_hex_center[0] - life_loc_x)
             ydiff = abs(old_hex_center[1] - life_loc_y)
             angle_points = math.degrees(math.atan2(ydiff,xdiff))
