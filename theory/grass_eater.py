@@ -1,5 +1,5 @@
-class Grass_Eater:
-    import HexSearch
+class GrassEater:
+    import theory.hexsearch
     from pymongo import *
     import random
     import datetime
@@ -9,11 +9,12 @@ class Grass_Eater:
     dbmap = client.map
     hex_tile_collection = dbmap.hex_tiles
 
-    def motivate(id,x,y):
+    def motivate(self, mob_id, x, y):
+        import theory.hexsearch
         print("do something")
         # get passed an object id for getting current info
 
-        mob_info = Grass_Eater.mob_collection.find({"id": id})
+        mob_info = GrassEater.mob_collection.find({"id": mob_id})
 
         cmx = mob_info["X"]
         cmy = mob_info["Y"]
@@ -26,7 +27,7 @@ class Grass_Eater:
         mob_herd_instinct = mob_info["herd instinct"]
 
         # first lets make sure we are near other likewise mobs
-        look_same_rating = Grass_Eater.look_same(cmx,cmy,mob_type,eyesight)
+        look_same_rating = GrassEater.look_same(cmx,cmy,mob_type,eyesight)
 
         # danger check
 
@@ -41,7 +42,7 @@ class Grass_Eater:
         if want_to_eat == True:
             # can i eat?
             # get current grass amount in current hex
-            Hex_Search.in_hex(cmx,cmy)
+            theory.hexsearch.in_hex(cmx,cmy)
 
 
 
@@ -63,7 +64,7 @@ class Grass_Eater:
         rating = 0
         # find all mob types in the same
         print("looking for others like me")
-        Grass_Eater.mob_collection.find({"type": mob_type})
+        GrassEater.mob_collection.find({"type": mob_type})
 
         # get distance from each
         mob_dist = []

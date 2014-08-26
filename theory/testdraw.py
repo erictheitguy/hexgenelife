@@ -25,7 +25,7 @@ cy = 100
 xdiff = abs(canvas_center_x - cx)
 ydiff = abs(canvas_center_y - cy)
 angle_point = math.degrees(math.atan2(ydiff,xdiff))
-print(xdiff,ydiff)
+
 
 scale_factor = 1
 
@@ -63,8 +63,9 @@ Y7 = newCY
 centerX = (X1+X2+X3+X4+X5+X6)/6
 centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
 
-print (centerX,centerY)
-print (newCX,newCY)
+print("center")
+print(centerX, centerY)
+print(newCX, newCY)
 
 # why figure out the center? we only draw one hexagon polygon
 # at a time using the center of only one other hexagon
@@ -73,7 +74,7 @@ print (newCX,newCY)
 canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7, fill="green")
 
 # create hexagon to bottom right
-newCX = ((cx + xdiff) * scale_factor) + twoseg +oneseg
+newCX = ((cx + xdiff) * scale_factor) + twoseg + oneseg
 newCY = ((cy + ydiff) * scale_factor) + twoseg
 
 
@@ -102,13 +103,16 @@ Y7 = newCY
 centerX = (X1+X2+X3+X4+X5+X6)/6
 centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
 
+print("bottom right")
+print(centerX, centerY)
+print(newCX, newCY)
 canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7)
 
 
 # create hexagon bottom
 
 newCX = ((cx + xdiff) * scale_factor)
-newCY = ((cy + ydiff) * scale_factor) +twoseg +twoseg
+newCY = ((cy + ydiff) * scale_factor) + twoseg + twoseg
 
 X1 = newCX - twoseg 
 Y1 = newCY 
@@ -139,7 +143,7 @@ canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7,fill="red")
 
 # create hexagon bottom left
 
-newCX = ((cx + xdiff) * scale_factor) - twoseg -oneseg
+newCX = ((cx + xdiff) * scale_factor) - twoseg - oneseg
 newCY = ((cy + ydiff) * scale_factor) + twoseg
 
 
@@ -172,7 +176,7 @@ canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7,fill="blue")
 
 # create hexagon top left
 
-newCX = ((cx + xdiff) * scale_factor) - twoseg -oneseg
+newCX = ((cx + xdiff) * scale_factor) - twoseg - oneseg
 newCY = ((cy + ydiff) * scale_factor) - twoseg
 
 
@@ -237,7 +241,7 @@ centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
 canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7,fill="brown")
 
 # create hexagon top  right
-newCX = ((cx + xdiff) * scale_factor) +twoseg +oneseg
+newCX = ((cx + xdiff) * scale_factor) + twoseg + oneseg
 newCY = ((cy + ydiff) * scale_factor) - twoseg
 
 

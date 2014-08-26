@@ -5,7 +5,6 @@ import time
 import math
 
 
-
 def point_in_poly(x,y,poly):
 # stolen from http://stackoverflow.com/questions/16625507/python-checking-if-point-is-inside-a-polygon
     n = len(poly)
@@ -71,26 +70,57 @@ def insert_hex(ix1,iy1, ix2,iy2, ix3,iy3, ix4,iy4 ,ix5,iy5, ix6,iy6, ix7,iy7, ic
     return hex_insert_id
 
 
+def create_surrounding_hex(x,y):
+    center_hex_x = x
+    center_hex_y = y
+    # need to check if a hex exists on each side of poly
+    # if it doesnt create it
+
+    # top
+    tcx = center_hex_x
+    tcy = center_hex_y + hex_twoseg + hex_twoseg
+    top_hex_search = hex_tiles_collection.find_one({"$and": [{"centerX": tcx}, {"centerY": tcy}]})
+    if top_hex_search:
+        print("create top")
+
+    # top right
+    trcx = center_hex_x + hex_twoseg + hex_oneseg
+    trcy = center_hex_y + hex_twoseg
+
+    # top left
+    tlcx = center_hex_x - hex_twoseg - hex_oneseg
+    tlcy = center_hex_y + hex_twoseg
+
+    # bottom
+    bcx = center_hex_x
+    bcy = center_hex_y - hex_twoseg - hex_twoseg
+
+    # bottom right
+    brcx = center_hex_x + hex_twoseg + hex_oneseg
+    brcy = center_hex_y - hex_twoseg
+
+    # bottom left
+    brcx = center_hex_x - hex_twoseg - hex_oneseg
+    brcy = center_hex_y - hex_twoseg
+
+
+
 client = MongoClient('candygram', 27017)
 db = client.map
 
 hex_tiles_collection = db.hex_tiles
 hex_center_collection = db.hex_tiles_center
 
-# db.yourCollection.find().limit(-1).skip(yourRandomNumber).next()
-
 # get random hexagon to start on
-# lets use the center points then intersect from there
+total_hexes = hex_tiles_collection.find().count()
+random_tile_number = random.randint(0,(total_hexes - 1))
+random_tile = hex_tiles_collection.find().skip(random_tile_number).limit(-1)
 
-# hex_tile_center = hex_center_collection.find_one() # not really random
-# point_cords = hex_tile_center['loc']['coordinates']
-# pX1,pY1 = point_cords
+# random_tile
+pX1 = random_tile[0]["centerX"]
+pY1 = random_tile[0]["centerY"]
 
-# temp i know this hex exists random start to replace this
-pX1 = 10
-pY1 = 10
-# temp
-
+print("starting hex tile", pX1, pY1)
 #hexagon size why is it 10? because I like 10
 hex_oneseg = 10/4
 hex_twoseg = hex_oneseg * 2
@@ -208,13 +238,12 @@ while i < 1000:
                 angle_points = angle_points + 360
             print(angle_points, " final angle")
 
-
             print(angle_points, " angle between the two points")
             if angle_points > 330 or angle_points < 30:
                 print("top of hexagon")
                 # create hexagon top
                 newCX = old_hex_center[0]
-                newCY = old_hex_center[1] +hex_twoseg +hex_twoseg
+                newCY = old_hex_center[1] + hex_twoseg + hex_twoseg
 
                 X1 = newCX - hex_twoseg
                 Y1 = newCY
@@ -397,7 +426,7 @@ while i < 1000:
             if angle_points > 270 and angle_points < 330:
                 print("top left")
                 # create hexagon top left
-                newCX = old_hex_center[0] - hex_twoseg -hex_oneseg
+                newCX = old_hex_center[0] - hex_twoseg - hex_oneseg
                 newCY = old_hex_center[1] + hex_twoseg
 
 
@@ -431,6 +460,9 @@ while i < 1000:
                 print(new_tile_id, old_hex_center, "new tile information")
                 point_inside = True
                 # we now have a new hexagon tile
+
+                # TODO create tiles all around new one
+
 
 
     else:
