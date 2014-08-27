@@ -3,6 +3,7 @@ from pymongo import *
 import random
 import time
 import math
+import theory.create_hex
 
 
 def point_in_poly(x,y,poly):
@@ -32,7 +33,8 @@ def insert_hex(ix1,iy1, ix2,iy2, ix3,iy3, ix4,iy4 ,ix5,iy5, ix6,iy6, ix7,iy7, ic
     rand_water = random.randint(0, 100)
     #starting grass value
     rand_grass = random.randint(0, 100)
-
+    centerX = icx
+    centerY = icy
     hex1 = {
         "loc":
         {
@@ -70,7 +72,8 @@ def insert_hex(ix1,iy1, ix2,iy2, ix3,iy3, ix4,iy4 ,ix5,iy5, ix6,iy6, ix7,iy7, ic
     return hex_insert_id
 
 
-def create_surrounding_hex(x,y):
+def create_surrounding_hex(x,y,hexagon_size):
+
     center_hex_x = x
     center_hex_y = y
     # need to check if a hex exists on each side of poly
@@ -80,29 +83,50 @@ def create_surrounding_hex(x,y):
     tcx = center_hex_x
     tcy = center_hex_y + hex_twoseg + hex_twoseg
     top_hex_search = hex_tiles_collection.find_one({"$and": [{"centerX": tcx}, {"centerY": tcy}]})
-    if top_hex_search:
+    if top_hex_search is None:
         print("create top")
+        theory.create_hex.top_hex(x,y,hexagon_size)
+
 
     # top right
     trcx = center_hex_x + hex_twoseg + hex_oneseg
     trcy = center_hex_y + hex_twoseg
+    topr_hex_search = hex_tiles_collection.find_one({"$and": [{"centerX": trcx}, {"centerY": trcy}]})
+    if topr_hex_search is None:
+        print("create top right")
+        theory.create_hex.top_right_hex(x,y,hexagon_size)
 
     # top left
     tlcx = center_hex_x - hex_twoseg - hex_oneseg
     tlcy = center_hex_y + hex_twoseg
+    topl_hex_search = hex_tiles_collection.find_one({"$and": [{"centerX": tlcx}, {"centerY": tlcy}]})
+    if topl_hex_search is None:
+        print("create top left")
+        theory.create_hex.top_left_hex(x,y,hexagon_size)
 
     # bottom
     bcx = center_hex_x
     bcy = center_hex_y - hex_twoseg - hex_twoseg
+    bottom_hex_search = hex_tiles_collection.find_one({"$and": [{"centerX": bcx}, {"centerY": bcy}]})
+    if bottom_hex_search is None:
+        print("create bottom")
+        theory.create_hex.bottom_hex(x,y,hexagon_size)
 
     # bottom right
     brcx = center_hex_x + hex_twoseg + hex_oneseg
     brcy = center_hex_y - hex_twoseg
+    bottomr_hex_search = hex_tiles_collection.find_one({"$and": [{"centerX": brcx}, {"centerY": brcy}]})
+    if bottomr_hex_search is None:
+        print("create bottom right")
+        theory.create_hex.bottom_right_hex(x,y,hexagon_size)
 
     # bottom left
-    brcx = center_hex_x - hex_twoseg - hex_oneseg
-    brcy = center_hex_y - hex_twoseg
-
+    blcx = center_hex_x - hex_twoseg - hex_oneseg
+    blcy = center_hex_y - hex_twoseg
+    bottoml_hex_search = hex_tiles_collection.find_one({"$and": [{"centerX": blcx}, {"centerY": blcy}]})
+    if bottoml_hex_search is None:
+        print("create bottom left")
+        theory.create_hex.bottom_left_hex(x,y,hexagon_size)
 
 
 client = MongoClient('candygram', 27017)
@@ -122,7 +146,8 @@ pY1 = random_tile[0]["centerY"]
 
 print("starting hex tile", pX1, pY1)
 #hexagon size why is it 10? because I like 10
-hex_oneseg = 10/4
+hex_size = 10
+hex_oneseg = hex_size/4
 hex_twoseg = hex_oneseg * 2
 
 # instance new life
@@ -152,10 +177,10 @@ while i < 1000:
     # direction
     change_dir_amount = random.randint(1, 100)
     change_dir_amount = life_dir_change / change_dir_amount
-    print(change_dir_amount, " <- amount to change dir")
+    # print(change_dir_amount, " <- amount to change dir")
     life_dir += change_dir_amount
     # add if above 360 convert it to 0 - 360
-    print(life_dir, " <- life direction")
+    # print(life_dir, " <- life direction")
 
     corrected_deg = 90 - life_dir
     theta = math.radians(corrected_deg)
@@ -164,7 +189,7 @@ while i < 1000:
     # new point
     life_loc_x += deltax
     life_loc_y += deltay
-    print(life_loc_x,life_loc_y," <- new location")
+    # print(life_loc_x,life_loc_y," <- new location")
     # okay we have a new location
 
     # lets see if we have a hexagon there
@@ -182,7 +207,7 @@ while i < 1000:
     create_new_poly = False
     point_inside = False
     if hex_search.count() > 0:
-        print("we found some hexagons", hex_search.count())
+        # print("we found some hexagons", hex_search.count())
         hex_count = hex_search.count()  # I really don't know if i need this?
 
         for hexagon_tile_found in hex_search:
@@ -200,7 +225,7 @@ while i < 1000:
             hexagon_poly = hexagon_tile_found["loc"]["coordinates"]
             hexagon_poly = hexagon_poly[0]
             point_inside = point_in_poly(life_loc_x,life_loc_y,hexagon_poly)
-            print(point_inside," are we still inside a polygon")
+            # print(point_inside," are we still inside a polygon")
             if point_inside == True:
                 old_hex_poly = hexagon_poly
                 old_hex_center = hexagon_tile_found["centerXY"]
@@ -215,7 +240,7 @@ while i < 1000:
             print("creating a new hexagon")
             # what is the last hexagon that I was in?
 
-            print(old_hex_center, " old hex center to start from") # this should be the last hexagon center I was in
+            # print(old_hex_center, " old hex center to start from") # this should be the last hexagon center I was in
             # note we always start inside a hexagon so the above var should be set hopefully
 
             # what side of the hexagon are we on?
@@ -225,10 +250,10 @@ while i < 1000:
             #what side of the hexagon are we on?
             xdiff = life_loc_x - old_hex_center[0]
             ydiff = life_loc_y - old_hex_center[1]
-            print(xdiff,ydiff, " diffs")
+            # print(xdiff,ydiff, " diffs")
 
             angle_points = math.degrees(math.atan2(ydiff,xdiff))
-            print(angle_points, " unconverted angle")
+            # print(angle_points, " unconverted angle")
             # 180 unconverted is really 270
             if angle_points < 0:
                 angle_points = abs(angle_points) + 90
@@ -236,232 +261,65 @@ while i < 1000:
                 angle_points = 90 - angle_points
             if angle_points < 0:
                 angle_points = angle_points + 360
-            print(angle_points, " final angle")
+            # print(angle_points, " final angle")
 
-            print(angle_points, " angle between the two points")
+            # print(angle_points, " angle between the two points")
             if angle_points > 330 or angle_points < 30:
                 print("top of hexagon")
                 # create hexagon top
-                newCX = old_hex_center[0]
-                newCY = old_hex_center[1] + hex_twoseg + hex_twoseg
 
-                X1 = newCX - hex_twoseg
-                Y1 = newCY
-
-                X2 = newCX - hex_oneseg
-                Y2 = newCY - hex_twoseg
-
-                X3 = newCX + hex_oneseg
-                Y3 = newCY - hex_twoseg
-
-                X4 = newCX + hex_twoseg
-                Y4 = newCY
-
-                X5 = newCX + hex_oneseg
-                Y5 = newCY + hex_twoseg
-
-                X6 = newCX - hex_oneseg
-                Y6 = newCY + hex_twoseg
-
-                X7 = newCX - hex_twoseg
-                Y7 = newCY
-
-                # what is its center?
-                centerX = (X1+X2+X3+X4+X5+X6)/6
-                centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
-                new_tile_id = insert_hex(X1, Y1, X2, Y2, X3, Y3, X4, Y4, X5, Y5, X6, Y6, X7, Y7, centerX, centerY)
-                old_hex_center[0] = centerX
-                old_hex_center[1] = centerY
+                new_tile_id = theory.create_hex.top_hex(old_hex_center[0], old_hex_center[1], hex_size)
                 print(new_tile_id, old_hex_center, "new tile information")
                 point_inside = True
                 # we now have a new hexagon tile
+                create_surrounding_hex(old_hex_center[0],old_hex_center[1],hex_size)
 
             if angle_points > 30 and angle_points < 90:
                 print("top right")
                 # create hexagon top  right
-                newCX = old_hex_center[0] + hex_twoseg + hex_oneseg
-                newCY = old_hex_center[1] + hex_twoseg
-
-                X1 = newCX - hex_twoseg
-                Y1 = newCY
-
-                X2 = newCX - hex_oneseg
-                Y2 = newCY - hex_twoseg
-
-                X3 = newCX + hex_oneseg
-                Y3 = newCY - hex_twoseg
-
-                X4 = newCX + hex_twoseg
-                Y4 = newCY
-
-                X5 = newCX + hex_oneseg
-                Y5 = newCY + hex_twoseg
-
-                X6 = newCX - hex_oneseg
-                Y6 = newCY + hex_twoseg
-
-                X7 = newCX - hex_twoseg
-                Y7 = newCY
-
-                # what is its center?
-                centerX = (X1+X2+X3+X4+X5+X6)/6
-                centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
-                new_tile_id = insert_hex(X1, Y1, X2, Y2, X3, Y3, X4, Y4, X5, Y5, X6, Y6, X7, Y7, centerX, centerY)
-                old_hex_center[0] = centerX
-                old_hex_center[1] = centerY
+                new_tile_id = theory.create_hex.top_right_hex(old_hex_center[0], old_hex_center[1], hex_size)
                 print(new_tile_id,old_hex_center, "new tile information")
                 point_inside == True
                 # we now have a new hexagon tile
+                create_surrounding_hex(old_hex_center[0],old_hex_center[1],hex_size)
 
             if angle_points > 90 and angle_points < 150:
                 print("bottom right")
                 # create hexagon to bottom right
-                newCX = old_hex_center[0] + hex_twoseg + hex_oneseg
-                newCY = old_hex_center[1] - hex_twoseg
-                X1 = newCX - hex_twoseg
-                Y1 = newCY
-
-                X2 = newCX - hex_oneseg
-                Y2 = newCY - hex_twoseg
-
-                X3 = newCX + hex_oneseg
-                Y3 = newCY - hex_twoseg
-
-                X4 = newCX + hex_twoseg
-                Y4 = newCY
-
-                X5 = newCX + hex_oneseg
-                Y5 = newCY + hex_twoseg
-
-                X6 = newCX - hex_oneseg
-                Y6 = newCY + hex_twoseg
-
-                X7 = newCX - hex_twoseg
-                Y7 = newCY
-
-                # what is its center?
-                centerX = (X1+X2+X3+X4+X5+X6)/6
-                centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
-                new_tile_id = insert_hex(X1, Y1, X2, Y2, X3, Y3, X4, Y4, X5, Y5, X6, Y6, X7, Y7, centerX, centerY)
-                old_hex_center[0] = centerX
-                old_hex_center[1] = centerY
+                new_tile_id = theory.create_hex.bottom_right_hex(old_hex_center[0], old_hex_center[1], hex_size)
                 print(new_tile_id,old_hex_center, "new tile information")
                 point_inside = True
                 # we now have a new hexagon tile
+                create_surrounding_hex(old_hex_center[0],old_hex_center[1],hex_size)
+
             if angle_points > 150 and angle_points < 210:
                 print("bottom")
                 # create hexagon bottom
-                newCX = old_hex_center[0]
-                newCY = old_hex_center[1] - hex_twoseg - hex_twoseg
-
-
-                X1 = newCX - hex_twoseg
-                Y1 = newCY
-
-                X2 = newCX - hex_oneseg
-                Y2 = newCY - hex_twoseg
-
-                X3 = newCX + hex_oneseg
-                Y3 = newCY - hex_twoseg
-
-                X4 = newCX + hex_twoseg
-                Y4 = newCY
-
-                X5 = newCX + hex_oneseg
-                Y5 = newCY + hex_twoseg
-
-                X6 = newCX - hex_oneseg
-                Y6 = newCY + hex_twoseg
-
-                X7 = newCX - hex_twoseg
-                Y7 = newCY
-
-                # what is its center?
-                centerX = (X1+X2+X3+X4+X5+X6)/6
-                centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
-                new_tile_id = insert_hex(X1, Y1, X2, Y2, X3, Y3, X4, Y4, X5, Y5, X6, Y6, X7, Y7, centerX, centerY)
-                # we are now in a new poly so update our "old" location
-                old_hex_center[0] = centerX
-                old_hex_center[1] = centerY
+                new_tile_id = theory.create_hex.bottom_hex(old_hex_center[0], old_hex_center[1], hex_size)
                 print(new_tile_id,old_hex_center, "new tile information")
                 point_inside = True
                 # we now have a new hexagon tile
+                create_surrounding_hex(old_hex_center[0],old_hex_center[1],hex_size)
 
             if angle_points > 210 and angle_points < 270:
                 print("bottom left")
                 # create hexagon bottom left
-                newCX = old_hex_center[0] - hex_twoseg - hex_oneseg
-                newCY = old_hex_center[1] - hex_twoseg
-
-
-                X1 = newCX - hex_twoseg
-                Y1 = newCY
-
-                X2 = newCX - hex_oneseg
-                Y2 = newCY - hex_twoseg
-
-                X3 = newCX + hex_oneseg
-                Y3 = newCY - hex_twoseg
-
-                X4 = newCX + hex_twoseg
-                Y4 = newCY
-
-                X5 = newCX + hex_oneseg
-                Y5 = newCY + hex_twoseg
-
-                X6 = newCX - hex_oneseg
-                Y6 = newCY + hex_twoseg
-
-                X7 = newCX - hex_twoseg
-                Y7 = newCY
-                # what is its center?
-                centerX = (X1+X2+X3+X4+X5+X6)/6
-                centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
-                new_tile_id = insert_hex(X1, Y1, X2, Y2, X3, Y3, X4, Y4, X5, Y5, X6, Y6, X7, Y7, centerX, centerY)
-                old_hex_center[0] = centerX
-                old_hex_center[1] = centerY
+                new_tile_id = theory.create_hex.bottom_left_hex(old_hex_center[0], old_hex_center[1], hex_size)
                 print(new_tile_id,old_hex_center, "new tile information")
                 point_inside == True
                 # we now have a new hexagon tile
+                create_surrounding_hex(old_hex_center[0],old_hex_center[1],hex_size)
+
             if angle_points > 270 and angle_points < 330:
                 print("top left")
                 # create hexagon top left
-                newCX = old_hex_center[0] - hex_twoseg - hex_oneseg
-                newCY = old_hex_center[1] + hex_twoseg
-
-
-                X1 = newCX - hex_twoseg
-                Y1 = newCY
-
-                X2 = newCX - hex_oneseg
-                Y2 = newCY - hex_twoseg
-
-                X3 = newCX + hex_oneseg
-                Y3 = newCY - hex_twoseg
-
-                X4 = newCX + hex_twoseg
-                Y4 = newCY
-
-                X5 = newCX + hex_oneseg
-                Y5 = newCY + hex_twoseg
-
-                X6 = newCX - hex_oneseg
-                Y6 = newCY + hex_twoseg
-
-                X7 = newCX - hex_twoseg
-                Y7 = newCY
-
-                # what is its center?
-                centerX = (X1+X2+X3+X4+X5+X6)/6
-                centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
-                new_tile_id = insert_hex(X1, Y1, X2, Y2, X3, Y3, X4, Y4, X5, Y5, X6, Y6, X7, Y7, centerX, centerY)
-                old_hex_center[0] = centerX
-                old_hex_center[1] = centerY
+                new_tile_id = theory.create_hex.top_left_hex(old_hex_center[0], old_hex_center[1], hex_size)
                 print(new_tile_id, old_hex_center, "new tile information")
                 point_inside = True
                 # we now have a new hexagon tile
+                create_surrounding_hex(old_hex_center[0],old_hex_center[1],hex_size)
 
-                # TODO create tiles all around new one
+
 
 
 

@@ -13,7 +13,11 @@ client = MongoClient('candygram',27017)
 db = client.map
 hex_tiles_collection = db.hex_tiles
 hex_center_collection = db.hex_tiles_center
-scale_factor = 1
+
+db_mob = client.mob
+grass_eater_collection =  db_mob.grasseater
+
+scale_factor = 5
 search_point_x = 1
 search_point_y = 1
 canvas_center_x = canvas_width / 2
@@ -30,6 +34,7 @@ lower_bounding_box_x = search_point_x + 1000
 lower_bounding_box_y = search_point_y - 1000
 
 hex_tiles = hex_tiles_collection.find()
+all_mobs = grass_eater_collection.find()
 
 if hex_tiles.count() > 0:
     hex_count = hex_tiles.count()
@@ -66,6 +71,18 @@ if hex_tiles.count() > 0:
         color_bit = "#" + str(b1) + str(b2) + str(b3)
         canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7, fill=color_bit)
 
+if all_mobs.count() > 0:
+    for mob_found in all_mobs:
+        mx = mob_found["mX"]
+        my = mob_found["mY"]
+
+        mx = ((mx + 1) * scale_factor) + xdiff
+        my = ((1 - my) * scale_factor) + ydiff
+        b1 = random.randint(0,9)
+        b2 = random.randint(0,9)
+        b3 = random.randint(0,9)
+        color_bit = "#" + str(b1) + str(b2) + str(b3)
+        canvas.create_oval(mx - (.5* scale_factor),my - (.5* scale_factor),mx + (.5 * scale_factor),my + (.5 * scale_factor),fill=color_bit)
 
 canvas.create_oval(search_point_x, search_point_y, search_point_x+2, search_point_y+2, fill="red")
 canvas.create_oval(245, 245, 255, 255, fill="black")
