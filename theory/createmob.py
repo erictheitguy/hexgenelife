@@ -3,6 +3,12 @@
 import datetime
 from pymongo import *
 import random
+import string
+import theory.create_hex
+
+def id_generator(id_size=8, chars=string.ascii_uppercase + string.digits):
+    return ''.join(random.choice(chars) for _ in range(id_size))
+
 client = MongoClient('candygram', 27017)
 db_map = client.map
 hex_tiles_collection = db_map.hex_tiles
@@ -10,6 +16,7 @@ db_mob = client.mob
 mob_info_collection = db_mob.grasseater
 
 number_to_create = 10
+
 
 for i in range(1, number_to_create):
     # get random starting location
@@ -21,6 +28,9 @@ for i in range(1, number_to_create):
     # to help remove chances of creating two on top of each other
     mx = random_tile[0]["centerX"]
     my = random_tile[0]["centerY"]
+
+    # in case we insert on edge hex
+    theory.create_hex.create_surrounding_hex(mx, my, 10)
 
     # starting value for hunger, energy, fat will change once mob born and it starts to live
     # really only determine its starting actions
@@ -55,6 +65,7 @@ for i in range(1, number_to_create):
     mob_herd_instinct = rand_herd_instinct  # value 0 through 100
 
     new_mob = {
+        "mob_id": id_generator(),
         "mXY": [mx, my],
         "mX": mx,
         "mY": my,

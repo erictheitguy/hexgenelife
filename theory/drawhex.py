@@ -1,5 +1,5 @@
 
-import datetime
+
 import random
 from pymongo import *
 from tkinter import *
@@ -17,7 +17,7 @@ hex_center_collection = db.hex_tiles_center
 db_mob = client.mob
 grass_eater_collection =  db_mob.grasseater
 
-scale_factor = 5
+scale_factor = 2
 search_point_x = 1
 search_point_y = 1
 canvas_center_x = canvas_width / 2

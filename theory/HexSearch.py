@@ -1,11 +1,11 @@
 class HexSearch():
-    from pymongo import *
-    client = MongoClient('candygram', 27017)
+    import pymongo
+    client = pymongo.MongoClient('candygram', 27017)
     dbmap = client.map
     hex_tile_collection = dbmap.hex_tiles
 
-    def in_hex(x,y):
-
+    def in_hex(x, y):
+        point_inside = False
         hex_id = 0
         inside_hex_id = 0
         upper_bounding_box_x = x - 10
@@ -28,7 +28,7 @@ class HexSearch():
 
         return inside_hex_id
 
-    def point_in_poly(x,y,poly):
+    def point_in_poly(x, y, poly):
     # stolen from http://stackoverflow.com/questions/16625507/python-checking-if-point-is-inside-a-polygon
         n = len(poly)
         inside = False
@@ -46,3 +46,13 @@ class HexSearch():
             p1x,p1y = p2x,p2y
 
         return inside
+
+    def get_tiles(x , y, range):
+        # get all tiles within range
+        upper_bounding_box_x = x - range
+        upper_bounding_box_y = y + range
+        lower_bounding_box_x = x + range
+        lower_bounding_box_y = y - range
+        tile_results = HexSearch.hex_tile_collection.find({"$and": [ {"centerX": {"$gt": upper_bounding_box_x}},{"centerX": {"$lt": lower_bounding_box_x}},
+                                                 {"centerY": {"$gt": lower_bounding_box_y}},{"centerY": {"$lt": upper_bounding_box_y}}]})
+        return tile_results

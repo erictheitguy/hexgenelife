@@ -1,12 +1,76 @@
 # hard coded database parameters aren't we doing something bad
 # should fix it later
 
+
+def create_surrounding_hex(x, y, hexagon_size):
+    import pymongo
+    client = pymongo.MongoClient('candygram',27017)
+    db = client.map
+    hex_tiles_search = db.hex_tiles
+
+    hexagon_segment_one = hexagon_size / 4
+    hexagon_segment_two = hexagon_segment_one * 2
+    center_hex_x = x
+    center_hex_y = y
+    # need to check if a hex exists on each side of poly
+    # if it doesnt create it
+
+    # top
+    tcx = center_hex_x
+    tcy = center_hex_y + hexagon_segment_two + hexagon_segment_two
+    top_hex_search = hex_tiles_search.find_one({"$and": [{"centerX": tcx}, {"centerY": tcy}]})
+    if top_hex_search is None:
+        print("create top")
+        top_hex(x, y, hexagon_size)
+
+
+    # top right
+    trcx = center_hex_x + hexagon_segment_two + hexagon_segment_one
+    trcy = center_hex_y + hexagon_segment_two
+    topr_hex_search = hex_tiles_search.find_one({"$and": [{"centerX": trcx}, {"centerY": trcy}]})
+    if topr_hex_search is None:
+        print("create top right")
+        top_right_hex(x, y, hexagon_size)
+
+    # top left
+    tlcx = center_hex_x - hexagon_segment_two - hexagon_segment_one
+    tlcy = center_hex_y + hexagon_segment_two
+    topl_hex_search = hex_tiles_search.find_one({"$and": [{"centerX": tlcx}, {"centerY": tlcy}]})
+    if topl_hex_search is None:
+        print("create top left")
+        top_left_hex(x ,y, hexagon_size)
+
+    # bottom
+    bcx = center_hex_x
+    bcy = center_hex_y - hexagon_segment_two - hexagon_segment_two
+    bottom_hex_search = hex_tiles_search.find_one({"$and": [{"centerX": bcx}, {"centerY": bcy}]})
+    if bottom_hex_search is None:
+        print("create bottom")
+        bottom_hex(x, y, hexagon_size)
+
+    # bottom right
+    brcx = center_hex_x + hexagon_segment_two + hexagon_segment_one
+    brcy = center_hex_y - hexagon_segment_two
+    bottomr_hex_search = hex_tiles_search.find_one({"$and": [{"centerX": brcx}, {"centerY": brcy}]})
+    if bottomr_hex_search is None:
+        print("create bottom right")
+        bottom_right_hex(x, y, hexagon_size)
+
+    # bottom left
+    blcx = center_hex_x - hexagon_segment_two - hexagon_segment_one
+    blcy = center_hex_y - hexagon_segment_two
+    bottoml_hex_search = hex_tiles_search.find_one({"$and": [{"centerX": blcx}, {"centerY": blcy}]})
+    if bottoml_hex_search is None:
+        print("create bottom left")
+        bottom_left_hex(x, y, hexagon_size)
+
+
 def top_hex(cx, cy, hexagon_size):
     import pymongo
     import random
     import datetime
     print("create hexagon on top of source point")
-    hexagon_segment_one =  hexagon_size / 4
+    hexagon_segment_one = hexagon_size / 4
     hexagon_segment_two = hexagon_segment_one * 2
     # create hexagon top
     newcx = cx
@@ -33,7 +97,7 @@ def top_hex(cx, cy, hexagon_size):
     Y7 = newcy
 
     # what is its center?
-    centerX = (X1 + X2 + X3 + X4+ X5 + X6) / 6
+    centerX = (X1 + X2 + X3 + X4 + X5 + X6) / 6
     centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
     #starting water value
     rand_water = random.randint(0, 100)
@@ -72,7 +136,7 @@ def top_right_hex(cx, cy, hexagon_size):
     import random
     import datetime
     # create hexagon top  right
-    hexagon_segment_one =  hexagon_size/4
+    hexagon_segment_one = hexagon_size/4
     hexagon_segment_two = hexagon_segment_one * 2
     newcx = cx + hexagon_segment_two + hexagon_segment_one
     newcy = cy + hexagon_segment_two
@@ -97,7 +161,6 @@ def top_right_hex(cx, cy, hexagon_size):
 
     X7 = newcx - hexagon_segment_two
     Y7 = newcy
-
 
     centerX = (X1+X2+X3+X4+X5+X6)/6
     centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
@@ -139,7 +202,7 @@ def top_left_hex(cx, cy, hexagon_size):
     import datetime
     print("create hexagon on top left of source point")
     # create hexagon top left
-    hexagon_segment_one =  hexagon_size/4
+    hexagon_segment_one = hexagon_size/4
     hexagon_segment_two = hexagon_segment_one * 2
     newcx = cx - hexagon_segment_two - hexagon_segment_one
     newcy = cy + hexagon_segment_two
@@ -207,7 +270,7 @@ def bottom_hex(cx, cy ,hexagon_size):
     import datetime
     print("create hexagon on bottom of source point")
     # create hexagon bottom
-    hexagon_segment_one =  hexagon_size/4
+    hexagon_segment_one = hexagon_size/4
     hexagon_segment_two = hexagon_segment_one * 2
     newcx = cx
     newcy = cy - hexagon_segment_two - hexagon_segment_two
@@ -274,7 +337,7 @@ def bottom_right_hex(cx, cy, hexagon_size):
     import datetime
     print("create hexagon on bottom right from source point")
     # create hexagon to bottom right
-    hexagon_segment_one =  hexagon_size/4
+    hexagon_segment_one = hexagon_size/4
     hexagon_segment_two = hexagon_segment_one * 2
     newcx = cx + hexagon_segment_two + hexagon_segment_one
     newcy = cy - hexagon_segment_two
@@ -339,7 +402,7 @@ def bottom_left_hex(cx, cy, hexagon_size):
     import datetime
     print("create hexagon on bottom left from source point")
     # create hexagon bottom left
-    hexagon_segment_one =  hexagon_size/4
+    hexagon_segment_one = hexagon_size/4
     hexagon_segment_two = hexagon_segment_one * 2
     newcx = cx - hexagon_segment_two - hexagon_segment_one
     newcy = cy - hexagon_segment_two
