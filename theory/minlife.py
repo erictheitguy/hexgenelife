@@ -179,7 +179,7 @@ while i < 1000:
     change_dir_amount = life_dir_change / change_dir_amount
     # print(change_dir_amount, " <- amount to change dir")
     life_dir += change_dir_amount
-    # add if above 360 convert it to 0 - 360
+
     # print(life_dir, " <- life direction")
 
     corrected_deg = 90 - life_dir
@@ -190,6 +190,7 @@ while i < 1000:
     life_loc_x += deltax
     life_loc_y += deltay
     # print(life_loc_x,life_loc_y," <- new location")
+
     # okay we have a new location
 
     # lets see if we have a hexagon there
@@ -242,10 +243,6 @@ while i < 1000:
 
             # print(old_hex_center, " old hex center to start from") # this should be the last hexagon center I was in
             # note we always start inside a hexagon so the above var should be set hopefully
-
-            # what side of the hexagon are we on?
-            xdiff = abs(old_hex_center[0] - life_loc_x)
-            ydiff = abs(old_hex_center[1] - life_loc_y)
 
             #what side of the hexagon are we on?
             xdiff = life_loc_x - old_hex_center[0]

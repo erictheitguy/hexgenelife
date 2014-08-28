@@ -15,7 +15,7 @@ hex_tiles_collection = db_map.hex_tiles
 db_mob = client.mob
 mob_info_collection = db_mob.grasseater
 
-number_to_create = 10
+number_to_create = 5
 
 
 for i in range(1, number_to_create):
@@ -26,11 +26,16 @@ for i in range(1, number_to_create):
 
     # we should offset these some random point inside random hexagon
     # to help remove chances of creating two on top of each other
+    rand_diff1 = random.randint(-5, 5)
+    rand_diff2 = random.randint(-5, 5)
     mx = random_tile[0]["centerX"]
     my = random_tile[0]["centerY"]
 
     # in case we insert on edge hex
     theory.create_hex.create_surrounding_hex(mx, my, 10)
+
+    mx += rand_diff1
+    my += rand_diff2
 
     # starting value for hunger, energy, fat will change once mob born and it starts to live
     # really only determine its starting actions

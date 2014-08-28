@@ -4,8 +4,8 @@ import random
 from pymongo import *
 from tkinter import *
 
-canvas_width = 500
-canvas_height = 500
+canvas_width = 1000
+canvas_height = 1000
 canvas = Canvas(width=canvas_width, height=canvas_height, bg='white')
 canvas.pack(expand=YES, fill=BOTH)
 
@@ -48,6 +48,12 @@ if hex_tiles.count() > 0:
         X5, Y5 = hexagon_tile_found["hexcp5"]
         X6, Y6 = hexagon_tile_found["hexcp6"]
         X7, Y7 = hexagon_tile_found["hexcp7"]
+        grass_color = hexagon_tile_found["Grass"]
+        grass_color = round(grass_color * .1, 0)
+        grass_color = int(grass_color)
+        if grass_color == 10:
+            grass_color = 9
+
 
         X1 = ((X1 + 1) * scale_factor) + xdiff
         X2 = ((X2 + 1) * scale_factor) + xdiff
@@ -68,6 +74,11 @@ if hex_tiles.count() > 0:
         b1 = random.randint(0,9)
         b2 = random.randint(0,9)
         b3 = random.randint(0,9)
+        b1 = 0
+        b2 = grass_color
+        b3 = 0
+        if grass_color < 2:
+            b1 = 9
         color_bit = "#" + str(b1) + str(b2) + str(b3)
         canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7, fill=color_bit)
 
@@ -85,6 +96,6 @@ if all_mobs.count() > 0:
         canvas.create_oval(mx - (.5* scale_factor),my - (.5* scale_factor),mx + (.5 * scale_factor),my + (.5 * scale_factor),fill=color_bit)
 
 canvas.create_oval(search_point_x, search_point_y, search_point_x+2, search_point_y+2, fill="red")
-canvas.create_oval(245, 245, 255, 255, fill="black")
+
 
 mainloop()

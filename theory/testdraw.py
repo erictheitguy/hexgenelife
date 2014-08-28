@@ -71,7 +71,7 @@ print(newCX, newCY)
 # at a time using the center of only one other hexagon
 
 # draw the above polygon using what we have.
-canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7, fill="green")
+canvas.create_polygon(X1,Y1,X2,Y2,X3,Y3,X4,Y4,X5,Y5,X6,Y6,X7,Y7, fill="#920")
 
 # create hexagon to bottom right
 newCX = ((cx + xdiff) * scale_factor) + twoseg + oneseg
