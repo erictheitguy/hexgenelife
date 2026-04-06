@@ -1,17 +1,15 @@
 class GrassEater:
-    import theory.hexsearch
-    import pymongo
+    import theory.HexSearch
+    import theory.db_connection
     import random
     import datetime
     import math
-    client = pymongo.MongoClient('candygram', 27017)
-    db_mob = client.mob
-    mob_collection = db_mob.grasseater
-    db_map = client.map
-    hex_tile_collection = db_map.hex_tiles
+    
+    mob_collection = theory.db_connection.grass_eater_collection
+    hex_tile_collection = theory.db_connection.hex_tiles_collection
 
     def motivate(mob_id, x, y):
-        import theory.hexsearch
+        import theory.HexSearch
 
         next_action = ["rest", 100]
         want_to_move = False
