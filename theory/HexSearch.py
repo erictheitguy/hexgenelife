@@ -1,8 +1,6 @@
 class HexSearch():
-    import pymongo
-    client = pymongo.MongoClient('candygram', 27017)
-    dbmap = client.map
-    hex_tile_collection = dbmap.hex_tiles
+    import theory.db_connection
+    hex_tile_collection = theory.db_connection.hex_tiles_collection
 
     def in_hex(x, y):
         point_inside = False

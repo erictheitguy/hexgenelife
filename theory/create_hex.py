@@ -3,10 +3,10 @@
 
 
 def create_surrounding_hex(x, y, hexagon_size):
-    import pymongo
-    client = pymongo.MongoClient('candygram',27017)
-    db = client.map
-    hex_tiles_search = db.hex_tiles
+    import theory.db_connection
+    # Use shared database connection instead of creating new one
+    hex_tiles = theory.db_connection.hex_tiles_collection
+    hex_tiles_search = hex_tiles
 
     hexagon_segment_one = hexagon_size / 4
     hexagon_segment_two = hexagon_segment_one * 2
@@ -66,7 +66,6 @@ def create_surrounding_hex(x, y, hexagon_size):
 
 
 def top_hex(cx, cy, hexagon_size):
-    import pymongo
     import random
     import datetime
     print("create hexagon on top of source point")
@@ -127,12 +126,12 @@ def top_hex(cx, cy, hexagon_size):
     client = pymongo.MongoClient('candygram',27017)
     db = client.map
     hex_insert_collection = db.hex_tiles
-    new_tile_id = hex_insert_collection.insert(hex1)
+    new_tile_id = theory.db_connection.hex_tiles_collection.insert(hex1)
     return new_tile_id
 
 
 def top_right_hex(cx, cy, hexagon_size):
-    import pymongo
+    import theory.db_connection
     import random
     import datetime
     # create hexagon top  right
@@ -192,12 +191,12 @@ def top_right_hex(cx, cy, hexagon_size):
     client = pymongo.MongoClient('candygram',27017)
     db = client.map
     hex_insert_collection = db.hex_tiles
-    new_tile_id = hex_insert_collection.insert(hex1)
+    new_tile_id = theory.db_connection.hex_tiles_collection.insert(hex1)
     return new_tile_id
 
 
 def top_left_hex(cx, cy, hexagon_size):
-    import pymongo
+    import theory.db_connection
     import random
     import datetime
     print("create hexagon on top left of source point")
@@ -265,7 +264,7 @@ def top_left_hex(cx, cy, hexagon_size):
 
 
 def bottom_hex(cx, cy ,hexagon_size):
-    import pymongo
+    import theory.db_connection
     import random
     import datetime
     print("create hexagon on bottom of source point")
@@ -328,11 +327,11 @@ def bottom_hex(cx, cy ,hexagon_size):
     client = pymongo.MongoClient('candygram',27017)
     db = client.map
     hex_insert_collection = db.hex_tiles
-    new_tile_id = hex_insert_collection.insert(hex1)
+    new_tile_id = theory.db_connection.hex_tiles_collection.insert(hex1)
     return new_tile_id
 
 def bottom_right_hex(cx, cy, hexagon_size):
-    import pymongo
+    import theory.db_connection
     import random
     import datetime
     print("create hexagon on bottom right from source point")
@@ -393,11 +392,11 @@ def bottom_right_hex(cx, cy, hexagon_size):
     client = pymongo.MongoClient('candygram',27017)
     db = client.map
     hex_insert_collection = db.hex_tiles
-    new_tile_id = hex_insert_collection.insert(hex1)
+    new_tile_id = theory.db_connection.hex_tiles_collection.insert(hex1)
     return new_tile_id
 
-def bottom_left_hex(cx, cy, hexagon_size):
-    import pymongo
+def bottom_left_hex(cx, cy ,hexagon_size):
+    import theory.db_connection
     import random
     import datetime
     print("create hexagon on bottom left from source point")
@@ -463,7 +462,7 @@ def bottom_left_hex(cx, cy, hexagon_size):
     return new_tile_id
 
 def hex_on_point(cx, cy, hexagon_size):
-    import pymongo
+    import theory.db_connection
     import random
     import datetime
     print("create hexagon on point")
