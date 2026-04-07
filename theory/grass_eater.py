@@ -5,8 +5,8 @@ class GrassEater:
     import datetime
     import math
     
-    mob_collection = theory.db_connection.grass_eater_collection
-    hex_tile_collection = theory.db_connection.hex_tiles_collection
+    # mob_collection = theory.db_connection.grass_eater_collection
+    # hex_tile_collection = theory.db_connection.hex_tiles_collection
 
     def motivate(mob_id, x, y):
         import theory.HexSearch
@@ -17,9 +17,11 @@ class GrassEater:
         munch_away = False
         inside_hex_id = ""
         # get passed an object id for getting current info
-
-        mob_info = GrassEater.mob_collection.find_one({"_id": mob_id})
-
+        mob_info = theory.db_connection.find_mob_by_id(mob_id)
+        if not mob_info:
+            # Handle case where mob is not found (should not happen in a stable state)
+            print(f"Error: Mob with ID {mob_id} not found in database.")
+            return
         cmx = mob_info["mX"]
         cmy = mob_info["mY"]
         hunger = mob_info["hunger"]

@@ -4,30 +4,36 @@
 
 def create_surrounding_hex(x, y, hexagon_size):
     import theory.db_connection
-    # Use shared database connection instead of creating new one
-    hex_tiles = theory.db_connection.hex_tiles_collection
-    hex_tiles_search = hex_tiles
+    import sqlite3
+    import random
+    import datetime
+
+    # Connect to SQLite database
+    conn = sqlite3.connect('candygram.db')
+    cursor = conn.cursor()
 
     hexagon_segment_one = hexagon_size / 4
     hexagon_segment_two = hexagon_segment_one * 2
     center_hex_x = x
     center_hex_y = y
+
     # need to check if a hex exists on each side of poly
     # if it doesnt create it
 
     # top
     tcx = center_hex_x
     tcy = center_hex_y + hexagon_segment_two + hexagon_segment_two
-    top_hex_search = hex_tiles_search.find_one({"$and": [{"centerX": tcx}, {"centerY": tcy}]})
+    cursor.execute("SELECT id FROM hex_tiles WHERE centerX=? AND centerY=?", (tcx, tcy))
+    top_hex_search = cursor.fetchone()
     if top_hex_search is None:
         print("create top")
         top_hex(x, y, hexagon_size)
 
-
     # top right
     trcx = center_hex_x + hexagon_segment_two + hexagon_segment_one
     trcy = center_hex_y + hexagon_segment_two
-    topr_hex_search = hex_tiles_search.find_one({"$and": [{"centerX": trcx}, {"centerY": trcy}]})
+    cursor.execute("SELECT id FROM hex_tiles WHERE centerX=? AND centerY=?", (trcx, trcy))
+    topr_hex_search = cursor.fetchone()
     if topr_hex_search is None:
         print("create top right")
         top_right_hex(x, y, hexagon_size)
@@ -35,7 +41,8 @@ def create_surrounding_hex(x, y, hexagon_size):
     # top left
     tlcx = center_hex_x - hexagon_segment_two - hexagon_segment_one
     tlcy = center_hex_y + hexagon_segment_two
-    topl_hex_search = hex_tiles_search.find_one({"$and": [{"centerX": tlcx}, {"centerY": tlcy}]})
+    cursor.execute("SELECT id FROM hex_tiles WHERE centerX=? AND centerY=?", (tlcx, tlcy))
+    topl_hex_search = cursor.fetchone()
     if topl_hex_search is None:
         print("create top left")
         top_left_hex(x ,y, hexagon_size)
@@ -43,7 +50,8 @@ def create_surrounding_hex(x, y, hexagon_size):
     # bottom
     bcx = center_hex_x
     bcy = center_hex_y - hexagon_segment_two - hexagon_segment_two
-    bottom_hex_search = hex_tiles_search.find_one({"$and": [{"centerX": bcx}, {"centerY": bcy}]})
+    cursor.execute("SELECT id FROM hex_tiles WHERE centerX=? AND centerY=?", (bcx, bcy))
+    bottom_hex_search = cursor.fetchone()
     if bottom_hex_search is None:
         print("create bottom")
         bottom_hex(x, y, hexagon_size)
@@ -51,7 +59,8 @@ def create_surrounding_hex(x, y, hexagon_size):
     # bottom right
     brcx = center_hex_x + hexagon_segment_two + hexagon_segment_one
     brcy = center_hex_y - hexagon_segment_two
-    bottomr_hex_search = hex_tiles_search.find_one({"$and": [{"centerX": brcx}, {"centerY": brcy}]})
+    cursor.execute("SELECT id FROM hex_tiles WHERE centerX=? AND centerY=?", (brcx, brcy))
+    bottomr_hex_search = cursor.fetchone()
     if bottomr_hex_search is None:
         print("create bottom right")
         bottom_right_hex(x, y, hexagon_size)
@@ -59,10 +68,14 @@ def create_surrounding_hex(x, y, hexagon_size):
     # bottom left
     blcx = center_hex_x - hexagon_segment_two - hexagon_segment_one
     blcy = center_hex_y - hexagon_segment_two
-    bottoml_hex_search = hex_tiles_search.find_one({"$and": [{"centerX": blcx}, {"centerY": blcy}]})
+    cursor.execute("SELECT id FROM hex_tiles WHERE centerX=? AND centerY=?", (blcx, blcy))
+    bottoml_hex_search = cursor.fetchone()
     if bottoml_hex_search is None:
         print("create bottom left")
         bottom_left_hex(x, y, hexagon_size)
+
+    conn.commit()
+    conn.close()
 
 
 def top_hex(cx, cy, hexagon_size):
@@ -98,6 +111,8 @@ def top_hex(cx, cy, hexagon_size):
     # what is its center?
     centerX = (X1 + X2 + X3 + X4 + X5 + X6) / 6
     centerY = (Y1+Y2+Y3+Y4+Y5+Y6)/6
+    
+    # TODO we should probably have a function that generates these values based on the surrounding hexes instead of just random
     #starting water value
     rand_water = random.randint(0, 100)
     #starting grass value
@@ -123,11 +138,7 @@ def top_hex(cx, cy, hexagon_size):
         "Grass": rand_grass,
         "Created": datetime.datetime.utcnow()
     }
-    client = pymongo.MongoClient('candygram',27017)
-    db = client.map
-    hex_insert_collection = db.hex_tiles
-    new_tile_id = theory.db_connection.hex_tiles_collection.insert(hex1)
-    return new_tile_id
+    return hex1
 
 
 def top_right_hex(cx, cy, hexagon_size):
@@ -188,11 +199,7 @@ def top_right_hex(cx, cy, hexagon_size):
         "Grass": rand_grass,
         "Created": datetime.datetime.utcnow()
     }
-    client = pymongo.MongoClient('candygram',27017)
-    db = client.map
-    hex_insert_collection = db.hex_tiles
-    new_tile_id = theory.db_connection.hex_tiles_collection.insert(hex1)
-    return new_tile_id
+    return hex1
 
 
 def top_left_hex(cx, cy, hexagon_size):
@@ -256,11 +263,7 @@ def top_left_hex(cx, cy, hexagon_size):
         "Grass": rand_grass,
         "Created": datetime.datetime.utcnow()
     }
-    client = pymongo.MongoClient('candygram',27017)
-    db = client.map
-    hex_insert_collection = db.hex_tiles
-    new_tile_id = hex_insert_collection.insert(hex1)
-    return new_tile_id
+    return hex1
 
 
 def bottom_hex(cx, cy ,hexagon_size):
@@ -324,11 +327,7 @@ def bottom_hex(cx, cy ,hexagon_size):
         "Grass": rand_grass,
         "Created": datetime.datetime.utcnow()
     }
-    client = pymongo.MongoClient('candygram',27017)
-    db = client.map
-    hex_insert_collection = db.hex_tiles
-    new_tile_id = theory.db_connection.hex_tiles_collection.insert(hex1)
-    return new_tile_id
+    return hex1
 
 def bottom_right_hex(cx, cy, hexagon_size):
     import theory.db_connection
@@ -389,11 +388,7 @@ def bottom_right_hex(cx, cy, hexagon_size):
         "Grass": rand_grass,
         "Created": datetime.datetime.utcnow()
     }
-    client = pymongo.MongoClient('candygram',27017)
-    db = client.map
-    hex_insert_collection = db.hex_tiles
-    new_tile_id = theory.db_connection.hex_tiles_collection.insert(hex1)
-    return new_tile_id
+    return hex1
 
 def bottom_left_hex(cx, cy ,hexagon_size):
     import theory.db_connection
@@ -455,11 +450,7 @@ def bottom_left_hex(cx, cy ,hexagon_size):
         "Grass": rand_grass,
         "Created": datetime.datetime.utcnow()
     }
-    client = pymongo.MongoClient('candygram',27017)
-    db = client.map
-    hex_insert_collection = db.hex_tiles
-    new_tile_id = hex_insert_collection.insert(hex1)
-    return new_tile_id
+    return hex1
 
 def hex_on_point(cx, cy, hexagon_size):
     import theory.db_connection
@@ -521,9 +512,5 @@ def hex_on_point(cx, cy, hexagon_size):
         "Grass": rand_grass,
         "Created": datetime.datetime.utcnow()
     }
-    client = pymongo.MongoClient('candygram',27017)
-    db = client.map
-    hex_insert_collection = db.hex_tiles
-    new_tile_id = hex_insert_collection.insert(hex1)
-    return new_tile_id
+    return hex1
 

@@ -27,6 +27,9 @@ This phase implements the foundation for the trait system, establishing the sche
 - Implement complex inheritance patterns
 - Handle trait dominance and recessiveness
 - Add generation tracking for inheritance depth
+  - Track Parent Generations
+  - use actual parent data
+  - calculate inhertinace depth. 
 
 ### Chunk 4: Extended Mob Schema (30-60 min)
 **File:** `theory/createmob.py` (modified)
