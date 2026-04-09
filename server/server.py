@@ -1,22 +1,26 @@
+import asyncio
 import json
 import sqlite3
+import datetime
+import time
 import websockets
-# Assume websocket_messages.json is available for schema validation
-# Assume a mechanism for WebSocket connection handling exists
 
 class GameServer:
     def __init__(self, db_path="game_state.db"):
         self.db_path = db_path
         self.db_conn = None
+        self.clients = set()
+        self.action_queue = []
+        self.tick_rate = 1.0  # 1 tick per second
         self._initialize_db()
-        # Placeholder for message parsing/validation logic
         print("GameServer initialized. Database connection established.")
 
     def _initialize_db(self):
         """Initializes the SQLite database and necessary tables."""
         self.db_conn = sqlite3.connect(self.db_path)
+        self.db_conn.row_factory = sqlite3.Row
         cursor = self.db_conn.cursor()
-        # Refactored to use relational structure: Mob, MobGene, MobHealth, MobBrain
+        
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS mobs (
                 mob_id TEXT PRIMARY KEY,
@@ -51,209 +55,263 @@ class GameServer:
                 cognition_attributes TEXT
             )
         """)
+        
+        # Add HexTile mapping
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS hex_tiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                loc TEXT,
+                centerXY TEXT,
+                centerX INTEGER,
+                centerY INTEGER,
+                hexcp1 TEXT,
+                hexcp2 TEXT,
+                hexcp3 TEXT,
+                hexcp4 TEXT,
+                hexcp5 TEXT,
+                hexcp6 TEXT,
+                hexcp7 TEXT,
+                Water REAL,
+                Grass REAL,
+                Created TEXT,
+                Updated TEXT
+            )
+        """)
+        
+        # Populate at least 1 hexagon if empty
+        cursor.execute("SELECT COUNT(*) FROM hex_tiles")
+        if cursor.fetchone()[0] == 0:
+            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            cursor.execute("""
+                INSERT INTO hex_tiles (
+                    loc, centerXY, centerX, centerY, 
+                    hexcp1, hexcp2, hexcp3, hexcp4, hexcp5, hexcp6, hexcp7, 
+                    Water, Grass, Created, Updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                json.dumps({"type": "Polygon", "coordinates": [[[0,0], [1,0], [1,1], [0,1], [-1,0], [-1,-1], [0,0]]]}),
+                json.dumps([0, 0]), 0, 0,
+                json.dumps([0,0]), json.dumps([1,0]), json.dumps([1,1]),
+                json.dumps([0,1]), json.dumps([-1,0]), json.dumps([-1,-1]), json.dumps([0,0]),
+                100.0, 100.0, now, now
+            ))
+            print("Populated default hex tile.")
+
         self.db_conn.commit()
         print(f"Database initialized at {self.db_path}")
 
+    def _ensure_client_mob(self, client_id: str):
+        """Phase 1 Requirement: Ensure client has an assigned mob."""
+        if not self.db_conn: return
+        cursor = self.db_conn.cursor()
+        mob_id = f"mob_{client_id}"
+        cursor.execute("SELECT 1 FROM mobs WHERE mob_id = ?", (mob_id,))
+        if not cursor.fetchone():
+            timestamp = self._get_current_timestamp()
+            cursor.execute("""
+                INSERT INTO mobs (mob_id, position, mob_type, generation, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+            """, (mob_id, json.dumps({"x":0, "y":0}), "default", 1, timestamp))
+            cursor.execute("""
+                INSERT INTO mob_genes (mob_id, mobType, fitnessScore, death, expired)
+                VALUES (?, ?, ?, ?, ?)
+            """, (mob_id, "default", 100.0, None, False))
+            self.db_conn.commit()
+            print(f"Created default mob {mob_id} for client {client_id}")
+
     def _validate_message(self, message: dict, command_type: str) -> bool:
-        """1. Message Reception & Parsing: Validates message structure against schema."""
-        # TODO: Replace this with actual JSON schema validation logic (e.g., using jsonschema library)
-        # For now, we perform a very basic structural check.
+        """Validates message structure against schema expectation."""
         required_fields = {
-            "MOVE_MOB": ["mob_id", "new_pos"],
-            "REQUEST_WORLD_STATE": ["client_id", "scope"]
+            "MOVE_MOB": ["mobId", "targetLocation"],
+            "REQUEST_WORLD_STATE": ["clientId"]
         }
         
+        # Convert potentially older field maps to test newer ones
+        payload = message.get("payload", {})
+        if not payload: 
+            payload = message.get("data", {})
+            
         if command_type in required_fields:
             for field in required_fields[command_type]:
-                if field not in message.get("data", {}):
+                # check both camelCase and snake_case for backward compat while we migrate
+                alt_field = "".join(['_'+c.lower() if c.isupper() else c for c in field]).lstrip('_')
+                if field not in payload and alt_field not in payload:
                     print(f"Validation Error: Missing required field '{field}' for command type '{command_type}'.")
                     return False
-        
-        # TODO: Add complex schema validation here based on websocket_messages.json content
-        # TODO: Load and apply JSON schema from websocket_messages.json here for full validation.
 
+        # Phase 1: Coordinate type validation for MOVE_MOB
+        if command_type == "MOVE_MOB":
+            target_loc = payload.get("targetLocation") or payload.get("target_location") or payload.get("new_pos")
+            if target_loc:
+                if not isinstance(target_loc, dict):
+                    print(f"Validation Error: 'targetLocation' must be an object.")
+                    return False
+                x = target_loc.get("x")
+                y = target_loc.get("y")
+                # Strict integer check as per requirements
+                if not isinstance(x, int) or not isinstance(y, int):
+                    print(f"Validation Error: 'targetLocation' coordinates must be integers. Received x={type(x)}, y={type(y)}")
+                    return False
         return True
 
-    async def receive_message(self, websocket):
-        """1. Message Reception & Parsing"""
-        try:
-            raw_message = await websocket.recv()
-            message = json.loads(raw_message)
-            command_type = message.get("type")
-            data = message.get("data")
 
-            if not self._validate_message(message, command_type):
-                return # Stop processing if validation fails
-
-            if command_type == "MOVE_MOB":
-                await self._handle_move_mob(data)
-            elif command_type == "REQUEST_WORLD_STATE":
-                await self._handle_request_world_state(data)
-            else:
-                print(f"Unknown command type received: {command_type}")
-        except json.JSONDecodeError:
-            print("Error: Malformed JSON received.")
-        except Exception as e:
-            print(f"Error during message processing: {e}")
-
-    async def _handle_move_mob(self, data: dict):
-        """2. Action Validation & 3. Core Game State Updates for MOVE_MOB"""
-        try:
-            mob_id = data.get("mob_id")
-            new_pos = data.get("new_pos")
-
-            if not mob_id or not new_pos:
-                print("Error: MOVE_MOB data missing mob_id or new_pos.")
-                return
-
-            # --- 2. Action Validation (Placeholder) ---
-            # TODO: Implement validation against websocket_messages.json schema
-            # TODO: Validate mob existence, coordinates, and movement rules
-            if not self._mob_exists(mob_id):
-                print(f"Error: Mob {mob_id} does not exist.")
-                return
-            # Add coordinate/rule validation here...
-
-            # --- 3. Core Game State Updates ---
-            if not self.db_conn:
-                print("Error: Database connection is not established.")
-                return
-            cursor = self.db_conn.cursor()
-            timestamp = self._get_current_timestamp()
-            
-            # Update Mob position in mobs table
-            cursor.execute("""
-                UPDATE mobs
-                SET position = ?, timestamp = ?
-                WHERE mob_id = ?
-            """, (new_pos, timestamp, mob_id))
-
-            # Update MobHealth in mob_health table
-            cursor.execute("""
-                UPDATE mob_health
-                SET hunger = ?, fat = ?, health = ?, age = ?
-                WHERE mob_id = ?
-            """, (data.get("health", 100), data.get("fat", 0), data.get("health", 100), 0)) # Placeholder values
-            
-            self.db_conn.commit()
-            print(f"Successfully updated mob {mob_id} position and health.")
-        except ConnectionError as e:
-            print(f"Error: {e}")
-        except Exception as e:
-            print(f"Database or validation error during MOVE_MOB: {e}")
-            # Error Handling: Handle database failures
-            if self.db_conn:
-                self.db_conn.rollback()
-
-    async def _handle_request_world_state(self, data: dict):
-        """2. Action Validation & 3. Core Game State Updates for REQUEST_WORLD_STATE"""
-        try:
-            client_id = data.get("client_id")
-            scope = data.get("scope")
-
-            if not client_id or not scope:
-                print("Error: REQUEST_WORLD_STATE data missing client_id or scope.")
-                return
-
-            # --- 2. Action Validation (Placeholder) ---
-            # TODO: Validate client ID and scope
-            if not self._is_valid_client(client_id, scope):
-                print(f"Error: Invalid client request from {client_id} for scope {scope}.")
-                return
-
-            # --- 3. Core Game State Updates ---
-            if not self.db_conn:
-                print("Error: Database connection is not established.")
-                return
-            cursor = self.db_conn.cursor()
-            
-            # Fetch current world state (example: fetching all mobs and tiles)
-            cursor.execute("SELECT * FROM mobs")
-            mobs_data = cursor.fetchall()
-            
-            cursor.execute("SELECT * FROM hex_tiles")
-            tiles_data = cursor.fetchall()
-            
-            # Fetch detailed data for a sample mob (to illustrate new structure)
-            mob_id_to_fetch = data.get("mob_id", ["dummy_id"])[0]
-            cursor.execute("SELECT * FROM mobs WHERE mob_id = ?", (mob_id_to_fetch,))
-            mob_details = cursor.fetchone()
-            
-            if mob_details is None:
-                print(f"Error: Mob {mob_id_to_fetch} not found in database.")
-                return
-
-            # Fetch gene data for the sample mob (Placeholder)
-            cursor.execute("SELECT * FROM mob_genes WHERE mob_id = ?", (mob_id_to_fetch,))
-            gene_details = cursor.fetchall()
-
-            world_state = {
-                "mobs": [dict(row) for row in mobs_data],
-                "tiles": [dict(row) for row in tiles_data],
-                "sample_mob_details": {
-                    "mob": dict(mob_details),
-                    "genes": [dict(row) for row in gene_details]
-                }
+    async def send_error(self, websocket, error_code: str, error_message: str):
+        err_msg = json.dumps({
+            "type": "ERROR",
+            "payload": {
+                "errorCode": error_code,
+                "errorMessage": error_message
             }
-            
-            print(f"Successfully retrieved world state for client {client_id}.")
-            # TODO: Construct WORLD_UPDATE message with location and resources and send to client
-            # self.generate_broadcast("WORLD_UPDATE", world_state)
+        })
+        try:
+            await websocket.send(err_msg)
+        except Exception:
+            pass
 
+    async def broadcast(self, message_type: str, payload: dict):
+        if not self.clients:
+            return
+        msg = json.dumps({"type": message_type, "payload": payload})
+        for client in self.clients:
+            try:
+                await client.send(msg)
+            except Exception:
+                pass
+
+    async def ws_handler(self, websocket, path="/"):
+        """Main connection handler."""
+        self.clients.add(websocket)
+        print(f"Client connected. Total clients: {len(self.clients)}")
+        try:
+            async for raw_message in websocket:
+                try:
+                    message = json.loads(raw_message)
+                    command_type = message.get("type")
+                    payload = message.get("payload", message.get("data", {}))
+                    
+                    # Ensure client mob logically based on ID
+                    client_id = payload.get("clientId") or payload.get("client_id")
+                    if client_id:
+                        self._ensure_client_mob(client_id)
+
+                    if not self._validate_message(message, command_type):
+                        await self.send_error(websocket, "VALIDATION_FAILED", "Message schema validation failed.")
+                        continue
+
+                    self.action_queue.append({
+                        "websocket": websocket,
+                        "command_type": command_type,
+                        "payload": payload
+                    })
+                except json.JSONDecodeError:
+                    print("Error: Malformed JSON received.")
+                    await self.send_error(websocket, "MALFORMED_JSON", "Invalid JSON payload.")
+        except websockets.exceptions.ConnectionClosed:
+            print("Client disconnected.")
+        finally:
+            self.clients.remove(websocket)
+
+    async def _tick_loop(self):
+        """Strict tick-based loop implementation."""
+        print(f"Tick loop starting. Tick rate: {self.tick_rate}s")
+        while True:
+            await asyncio.sleep(self.tick_rate)
+            if self.action_queue:
+                queue_snapshot = self.action_queue[:]
+                self.action_queue.clear()
+                
+                for action in queue_snapshot:
+                    cmd = action["command_type"]
+                    payload = action["payload"]
+                    ws = action["websocket"]
+                    
+                    if cmd == "MOVE_MOB":
+                        await self._handle_move_mob(payload)
+                    elif cmd == "REQUEST_WORLD_STATE":
+                        await self._handle_request_world_state(payload, ws)
+                    else:
+                        print(f"Unknown command queued: {cmd}")
+
+            # Once all actions for the tick are done, broadcast TICK_COMPLETE
+            await self.broadcast("TICK_COMPLETE", {"timestamp": self._get_current_timestamp()})
+
+    async def _handle_move_mob(self, payload: dict):
+        mob_id = payload.get("mobId") or payload.get("mob_id")
+        target_loc = payload.get("targetLocation") or payload.get("new_pos")
+
+        if not mob_id or not target_loc:
+            return
+
+        if not self._mob_exists(mob_id):
+            print(f"Error: Mob {mob_id} does not exist.")
+            return
+
+        if not self.db_conn: return
+        cursor = self.db_conn.cursor()
+        timestamp = self._get_current_timestamp()
+        
+        cursor.execute("UPDATE mobs SET position = ?, timestamp = ? WHERE mob_id = ?", 
+                       (json.dumps(target_loc), timestamp, mob_id))
+        self.db_conn.commit()
+        print(f"Updated mob {mob_id} position to {target_loc}.")
+        
+        await self.broadcast("MOB_UPDATE", {
+            "mobId": mob_id,
+            "health": {"hunger": 100, "fat": 0, "health": 100, "age": 0},
+            "brain": {"updated": timestamp},
+            "geneTraits": {"mobType": "default", "fitnessScore": 100, "death": None}
+        })
+
+    async def _handle_request_world_state(self, payload: dict, ws):
+        client_id = payload.get("clientId") or payload.get("client_id")
+        if not client_id: return
+            
+        if not self.db_conn: return
+        cursor = self.db_conn.cursor()
+        
+        cursor.execute("SELECT * FROM mobs")
+        mobs = [dict(row) for row in cursor.fetchall()]
+            
+        cursor.execute("SELECT * FROM hex_tiles")
+        tiles = [dict(row) for row in cursor.fetchall()]
+
+        try:
+            await ws.send(json.dumps({
+                "type": "WORLD_UPDATE",
+                "payload": {
+                    "mobs": mobs,
+                    "tiles": tiles
+                }
+            }))
         except Exception as e:
-            print(f"Database or validation error during REQUEST_WORLD_STATE: {e}")
-            # Error Handling: Handle database failures
-            if self.db_conn:
-                self.db_conn.rollback()
+            print(f"Failed to send world state: {e}")
 
     def _mob_exists(self, mob_id: str) -> bool:
-        """Helper to check if a mob exists in the database."""
-        if not self.db_conn:
-                print("Error: Database connection is not established.")
-                return False
+        if not self.db_conn: return False
         cursor = self.db_conn.cursor()
         cursor.execute("SELECT 1 FROM mobs WHERE mob_id = ?", (mob_id,))
         return cursor.fetchone() is not None
 
-    def _is_valid_client(self, client_id: str, scope: str) -> bool:
-        """Helper to validate client credentials/scope."""
-        # TODO: Implement actual validation logic here
-        return True # Placeholder: Assume valid for now
-
     def _get_current_timestamp(self) -> float:
-        """Helper to get the current timestamp."""
-        import time
         return time.time()
-
-    def generate_broadcast(self, message_type: str, payload: dict):
-        """4. State Broadcast Generation"""
-        # 2. WebSocket Protocol Fix: Use 'payload' key instead of 'data'
-        broadcast_message = {
-            "type": message_type,
-            "payload": payload
-        }
-        print(f"Generated {message_type} broadcast: {json.dumps(broadcast_message)}")
-        # 5. Message Broadcasting (Send to clients)
-        # TODO: Construct MOB_UPDATE or WORLD_UPDATE messages and send to clients
-        pass
 
     def close(self):
         if self.db_conn:
             self.db_conn.close()
             print("Database connection closed.")
 
-# --- Main execution block (WebSocket server setup) ---
 async def main():
     server = GameServer()
-    # Start the WebSocket server
-    async with websockets.serve(server.receive_message, "localhost", 8765):
+    # Run the tick loop explicitly in the background
+    asyncio.create_task(server._tick_loop())
+    
+    # Start the WebSocket server using the new ws_handler
+    async with websockets.serve(server.ws_handler, "localhost", 8765):
         print("WebSocket server started on ws://localhost:8765")
         await asyncio.Future()  # Run forever
 
 if __name__ == "__main__":
-    import asyncio
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nServer shutting down.")
-        # In a real app, you might call server.close() here if it manages resources
