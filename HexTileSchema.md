@@ -1,8 +1,7 @@
-SqlLite3 Database schema for the hext tiles. 
+# #SqlLite3 Database schema for the hext tiles
 
-
-loc : Text 
-    loc is storing json data. 
+loc : Text
+    loc is storing json data.
 centerXY: Text
     CenterXY is storing an array
 centerX : interger

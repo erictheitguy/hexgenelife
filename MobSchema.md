@@ -1,8 +1,10 @@
-Mob schema is broken into multiple tables and joined by ID. 
+# # Mob Schema
 
-First table is the Mob Gene Type. 
-Second table is the Mob health stats. 
-Third table is the mob brain. 
+Mob schema is broken into multiple tables and joined by ID.
+
+First table is the Mob Gene Type.
+Second table is the Mob health stats.
+Third table is the mob brain.
 
 **Table MobGene**
 ID : Integer PRIMARY KEY
@@ -15,11 +17,9 @@ actual_traits : Text
 fitness_score : Real
 death : Text (TimeStamp)
 expired : integer
-    Death flag if alive or not. 
+    Death flag if alive or not.
 Created : Text (TimeStamp)
 Updated : Text (TimeStamp)
-
-
 
 **Table MobHealth**
 ID : Integer PRIMARY KEY
@@ -28,9 +28,6 @@ Fat : Real
 Health : Real
 Age : Real
 Updated : Text (TimeStamp)
-
-
-
 
 **Table MobBrain**
 ID : Integer PRIMARY KEY

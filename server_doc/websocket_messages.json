@@ -1,0 +1,63 @@
+{
+  "ClientActions": {
+    "MOVE_MOB": {
+      "type": "COMMAND",
+      "payload": {
+        "mobId": "integer",
+        "targetLocation": {
+          "x": "integer",
+          "y": "integer"
+        }
+      },
+      "description": "Client requests a mob to move to a target location."
+    },
+    "REQUEST_WORLD_STATE": {
+      "type": "COMMAND",
+      "payload": {
+        "clientId": "string"
+      },
+      "description": "Client requests a full or partial world state snapshot."
+    }
+  },
+  "ServerStateUpdates": {
+    "MOB_UPDATE": {
+      "type": "STATE",
+      "payload": {
+        "mobId": "integer",
+        "health": {
+          "hunger": "real",
+          "fat": "real",
+          "health": "real",
+          "age": "real"
+        },
+        "brain": {
+          "updated": "timestamp"
+        },
+        "geneTraits": {
+          "mobType": "string",
+          "fitnessScore": "real",
+          "death": "timestamp"
+        }
+      },
+      "description": "Server broadcasts an update for a specific mob's state."
+    },
+    "WORLD_UPDATE": {
+      "type": "STATE",
+      "payload": {
+        "hexId": "string",
+        "tileData": {
+          "location": {
+            "centerX": "real",
+            "centerY": "real"
+          },
+          "resources": {
+            "water": "real",
+            "grass": "real"
+          },
+          "updated": "timestamp"
+        }
+      },
+      "description": "Server broadcasts an update for a specific hex tile's state."
+    }
+  }
+}
