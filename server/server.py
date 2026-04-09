@@ -16,22 +16,39 @@ class GameServer:
         """Initializes the SQLite database and necessary tables."""
         self.db_conn = sqlite3.connect(self.db_path)
         cursor = self.db_conn.cursor()
-        # Placeholder for creating tables based on requirements (hex tiles, mobs)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS hex_tiles (
-                tile_id TEXT PRIMARY KEY,
-                resource TEXT,
-                timestamp REAL
-            )
-        """)
+        # Refactored to use relational structure: Mob, MobGene, MobHealth, MobBrain
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS mobs (
                 mob_id TEXT PRIMARY KEY,
                 position TEXT,
-                health INTEGER,
-                brain REAL,
-                genes REAL,
+                mob_type TEXT,
+                generation INTEGER,
                 timestamp REAL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mob_genes (
+                mob_id TEXT,
+                mobType TEXT,
+                fitnessScore REAL,
+                death REAL, -- Timestamp of death (NULL if not dead)
+                expired BOOLEAN, -- Flag if gene has expired
+                PRIMARY KEY (mob_id, mobType)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mob_health (
+                mob_id TEXT PRIMARY KEY,
+                hunger REAL,
+                fat REAL,
+                health REAL,
+                age REAL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mob_brain (
+                mob_id TEXT PRIMARY KEY,
+                cognition_attributes TEXT
             )
         """)
         self.db_conn.commit()
@@ -53,12 +70,14 @@ class GameServer:
                     return False
         
         # TODO: Add complex schema validation here based on websocket_messages.json content
+        # TODO: Load and apply JSON schema from websocket_messages.json here for full validation.
 
         return True
 
-    def receive_message(self, raw_message: str):
+    async def receive_message(self, websocket):
         """1. Message Reception & Parsing"""
         try:
+            raw_message = await websocket.recv()
             message = json.loads(raw_message)
             command_type = message.get("type")
             data = message.get("data")
@@ -67,9 +86,9 @@ class GameServer:
                 return # Stop processing if validation fails
 
             if command_type == "MOVE_MOB":
-                self._handle_move_mob(data)
+                await self._handle_move_mob(data)
             elif command_type == "REQUEST_WORLD_STATE":
-                self._handle_request_world_state(data)
+                await self._handle_request_world_state(data)
             else:
                 print(f"Unknown command type received: {command_type}")
         except json.JSONDecodeError:
@@ -77,7 +96,7 @@ class GameServer:
         except Exception as e:
             print(f"Error during message processing: {e}")
 
-    def _handle_move_mob(self, data: dict):
+    async def _handle_move_mob(self, data: dict):
         """2. Action Validation & 3. Core Game State Updates for MOVE_MOB"""
         try:
             mob_id = data.get("mob_id")
@@ -86,6 +105,7 @@ class GameServer:
             if not mob_id or not new_pos:
                 print("Error: MOVE_MOB data missing mob_id or new_pos.")
                 return
+
             # --- 2. Action Validation (Placeholder) ---
             # TODO: Implement validation against websocket_messages.json schema
             # TODO: Validate mob existence, coordinates, and movement rules
@@ -100,14 +120,23 @@ class GameServer:
                 return
             cursor = self.db_conn.cursor()
             timestamp = self._get_current_timestamp()
-            # Atomically update mob position and timestamp
+            
+            # Update Mob position in mobs table
             cursor.execute("""
                 UPDATE mobs
                 SET position = ?, timestamp = ?
                 WHERE mob_id = ?
             """, (new_pos, timestamp, mob_id))
+
+            # Update MobHealth in mob_health table
+            cursor.execute("""
+                UPDATE mob_health
+                SET hunger = ?, fat = ?, health = ?, age = ?
+                WHERE mob_id = ?
+            """, (data.get("health", 100), data.get("fat", 0), data.get("health", 100), 0)) # Placeholder values
+            
             self.db_conn.commit()
-            print(f"Successfully updated mob {mob_id} position to {new_pos}.")
+            print(f"Successfully updated mob {mob_id} position and health.")
         except ConnectionError as e:
             print(f"Error: {e}")
         except Exception as e:
@@ -116,7 +145,7 @@ class GameServer:
             if self.db_conn:
                 self.db_conn.rollback()
 
-    def _handle_request_world_state(self, data: dict):
+    async def _handle_request_world_state(self, data: dict):
         """2. Action Validation & 3. Core Game State Updates for REQUEST_WORLD_STATE"""
         try:
             client_id = data.get("client_id")
@@ -145,13 +174,30 @@ class GameServer:
             cursor.execute("SELECT * FROM hex_tiles")
             tiles_data = cursor.fetchall()
             
+            # Fetch detailed data for a sample mob (to illustrate new structure)
+            mob_id_to_fetch = data.get("mob_id", ["dummy_id"])[0]
+            cursor.execute("SELECT * FROM mobs WHERE mob_id = ?", (mob_id_to_fetch,))
+            mob_details = cursor.fetchone()
+            
+            if mob_details is None:
+                print(f"Error: Mob {mob_id_to_fetch} not found in database.")
+                return
+
+            # Fetch gene data for the sample mob (Placeholder)
+            cursor.execute("SELECT * FROM mob_genes WHERE mob_id = ?", (mob_id_to_fetch,))
+            gene_details = cursor.fetchall()
+
             world_state = {
                 "mobs": [dict(row) for row in mobs_data],
-                "tiles": [dict(row) for row in tiles_data]
+                "tiles": [dict(row) for row in tiles_data],
+                "sample_mob_details": {
+                    "mob": dict(mob_details),
+                    "genes": [dict(row) for row in gene_details]
+                }
             }
             
             print(f"Successfully retrieved world state for client {client_id}.")
-            # TODO: Construct WORLD_UPDATE message and send to client
+            # TODO: Construct WORLD_UPDATE message with location and resources and send to client
             # self.generate_broadcast("WORLD_UPDATE", world_state)
 
         except Exception as e:
@@ -181,13 +227,14 @@ class GameServer:
 
     def generate_broadcast(self, message_type: str, payload: dict):
         """4. State Broadcast Generation"""
-        # TODO: Construct MOB_UPDATE or WORLD_UPDATE messages
+        # 2. WebSocket Protocol Fix: Use 'payload' key instead of 'data'
         broadcast_message = {
             "type": message_type,
-            "data": payload
+            "payload": payload
         }
         print(f"Generated {message_type} broadcast: {json.dumps(broadcast_message)}")
-        # TODO: 5. Message Broadcasting (Send to clients)
+        # 5. Message Broadcasting (Send to clients)
+        # TODO: Construct MOB_UPDATE or WORLD_UPDATE messages and send to clients
         pass
 
     def close(self):
