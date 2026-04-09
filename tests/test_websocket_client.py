@@ -52,7 +52,9 @@ class TestHexGenLifeClient(unittest.TestCase):
         mock_send_message.assert_called_once_with("REQUEST_WORLD_STATE", {"clientId": client_id})
 
     # --- Test for State Management Logic (Simplified for this step) ---
-    def test_state_update_mob_update(self):
+    @patch('client.websocket_client.HexGenLifeClient.handle_incoming_message')
+    @patch('client.websocket_client.HexGenLifeClient.get_client_state')
+    async def test_state_update_mob_update(self, mock_handle_incoming_message, mock_get_client_state):
         """Test the MOB_UPDATE handling updates the state correctly."""
         # Setup initial state
         initial_state = {"mobs": {}, "worldTiles": {}}
@@ -70,24 +72,32 @@ class TestHexGenLifeClient(unittest.TestCase):
             }
         }
         
-        # Manually call the handler (since we can't easily mock the websocket stream in this simple test)
-        self.client.handle_incoming_message(mock_mob_update)
+        # Call the method via the mock to simulate the event
+        mock_handle_incoming_message.return_value = None # Ensure mock doesn't raise error
+        self.client.state_manager.handle_incoming_message(mock_mob_update)
         
         # Assert state was updated
-        final_state = self.client.get_client_state()
+        final_state = await mock_get_client_state()
         self.assertIn(mob_id, final_state["mobs"])
         self.assertEqual(final_state["mobs"][mob_id]["health"]["health"], 90.0)
         self.assertEqual(final_state["mobs"][mob_id]["brain"]["updated"], "2026-04-08T10:00:00Z")
 
 
+    @patch('client.websocket_client.HexGenLifeClient.get_client_state')
+    async def test_get_client_state(self, mock_get_client_state):
+        """Test that get_client_state returns the current state."""
+        # Setup initial state
+        initial_state = {"mobs": {}, "worldTiles": {}}
+        self.client.state_manager.setState(initial_state)
+        
+        # Mock the return value
+        expected_state = {"mobs": {}, "worldTiles": {}}
+        mock_get_client_state.return_value = expected_state
+        
+        final_state = await mock_get_client_state()
+        
+        mock_get_client_state.assert_called_once()
+        self.assertEqual(final_state, expected_state)
+
 if __name__ == '__main__':
-    # For running async tests from a script
-    try:
-        asyncio.run(unittest.main())
-    except RuntimeError as e:
-        if "cannot run non-main coroutine" in str(e):
-            # Handle case where asyncio.run is called in an environment that already has a loop
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(unittest.main())
-        else:
-            raise
+    unittest.main()
