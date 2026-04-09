@@ -9,6 +9,56 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Define the WebSocket server address (to be configured)
 SERVER_URI = "ws://localhost:8765" # Placeholder, this should be configurable
 
+# Placeholder for HexGenLifeClient, assuming it needs to be defined or imported
+class HexGenLifeClient:
+    def __init__(self, uri):
+        self.uri = uri
+        self.websocket = None
+        self.loop = asyncio.get_event_loop()
+        self.state_manager = ClientState() # Initialize state manager here
+        
+    async def connect(self):
+        """Establishes the WebSocket connection."""
+        logging.info(f"Attempting to connect to {self.uri}...")
+        try:
+            self.websocket = await websockets.connect(self.uri)
+            logging.info("WebSocket connection established.")
+            # Start listening for messages in a separate task if necessary
+            # For now, we just keep the connection open.
+            return True
+        except Exception as e:
+            logging.error(f"Connection failed: {e}")
+            return False
+
+    async def send_message(self, message_type: str, payload: dict):
+        """Sends a message to the server, handling serialization and connection status."""
+        if self.websocket:
+            message = {"type": message_type, "data": payload}
+            try:
+                await self.websocket.send(json.dumps(message))
+                logging.info(f"Sent message type: {message_type}")
+            except Exception as e:
+                logging.error(f"Failed to send message {message_type}: {e}")
+        else:
+            logging.warning(f"WebSocket is not connected. Message type: {message_type} not sent.")
+
+    async def send_move_mob(self, mob_id: str | int, x: float, y: float):
+        """Sends a command to move a specific mob to coordinates (x, y)."""
+        mob_id_str = str(mob_id)
+        logging.info(f"Sending move command for mob {mob_id_str} to ({x}, {y})")
+        # Adjusted payload to match test expectation: {"mobId": mob_id, "targetLocation": {"x": x, "y": y}}
+        await self.send_message("MOVE_MOB", {"mobId": mob_id_str, "targetLocation": {"x": x, "y": y}})
+
+    async def send_request_world_state(self, client_id: str):
+        """Requests the current world state from the server."""
+        logging.info(f"Requesting world state for client {client_id}")
+        # Placeholder logic: send a request message type
+        await self.send_message("REQUEST_WORLD_STATE", {"clientId": client_id})
+
+    def start(self):
+        """Starts the connection process in the event loop."""
+        self.loop.run_until_complete(self.connect())
+
 # --- Phase 3: State Management and Incoming Message Handling ---
 class ClientState:
     """Simple Observable Pattern State Manager for the client."""
@@ -31,6 +81,8 @@ class ClientState:
         }
         self._state.update(self._initial_state_structure)
         self._subscribers = []
+        # Removed: client_state = ClientState() - Instance creation moved to HexGenLifeClient
+
     def subscribe(self, callback):
         """Adds a callback function to be called on state changes."""
         self._subscribers.append(callback)
@@ -42,59 +94,7 @@ class ClientState:
     def get_state(self):
         """Returns a copy of the current state."""
         return self._state.copy()
-
-    # Initialize state manager
-    client_state = ClientState()
-
-    def handle_incoming_message(self, data: dict):
-        """Handles incoming messages based on the message type."""
-        msg_type = data.get("type")
-        payload = data.get("payload", {})
-
-        if msg_type == "STATE":
-            if "MOB_UPDATE" in data:
-                logging.info(f"Handling MOB_UPDATE for mobId: {payload.get('mobId')}")
-                # TODO: Implement state update logic using Observable Pattern
-                mob_id = payload.get("mobId")
-                mob_update_data = payload.get("health", {})
-                brain_data = payload.get("brain", {})
-                gene_data = payload.get("geneTraits", {})
-
-                if mob_id is not None:
-                    current_mobs = self.state_manager.get_state()["mobs"]
-                    current_mobs[mob_id] = {
-                        "health": mob_update_data,
-                        "brain": brain_data,
-                        "geneTraits": gene_data
-                    }
-                    self.state_manager.setState({"mobs": current_mobs})
-
-            elif "WORLD_UPDATE" in data:
-                logging.info(f"Handling WORLD_UPDATE for hexId: {payload.get('hexId')}")
-                # TODO: Implement state update logic using Observable Pattern
-                hex_id = payload.get("hexId")
-                tile_data = payload.get("tileData", {})
-
-                if hex_id is not None:
-                    current_tiles = self.state_manager.get_state()["worldTiles"]
-                    current_tiles[hex_id] = {
-                        "location": tile_data.get("location", {}),
-                        "resources": tile_data.get("resources", {})
-                    }
-                    self.state_manager.setState({"worldTiles": current_tiles})
-
-        elif msg_type == "COMMAND":
-            if "MOVE_MOB" in data:
-                logging.info(f"Handling MOVE_MOB command for mobId: {payload.get('mobId')} to ({payload.get('targetLocation', {}).get('x')}, {payload.get('targetLocation', {}).get('y')})")
-                # Outgoing message logic is handled by send_move_mob
-                pass
-            elif "REQUEST_WORLD_STATE" in data:
-                logging.info(f"Handling REQUEST_WORLD_STATE for clientId: {payload.get('clientId')}")
-                # Outgoing message logic is handled by send_request_world_state
-                pass
-        else:
-            logging.warning(f"Unknown message type received: {msg_type}")
-
+    
     def get_state_subscriber(self):
         """Returns a callback function to subscribe to state changes."""
         def state_callback(new_state):
@@ -102,8 +102,44 @@ class ClientState:
             # TODO: Signal the rendering component/state manager upon any state change
         return state_callback
 
-    def get_client_state(self):
-        return self.state_manager.get_state()
+    def handle_incoming_message(self, message: dict):
+        """Delegates incoming messages to the state manager."""
+        message_type = message.get("type")
+        if message_type == "MOB_UPDATE":
+            self._process_mob_update(message.get("data", {}))
+        elif message_type == "WORLD_UPDATE":
+            self._process_world_update(message.get("data", {}))
+        else:
+            logging.warning(f"Unknown message type received: {message_type}")
+
+    def get_client_state(self) -> dict:
+        """Retrieves the current state from the state manager."""
+        return self.get_state()
+
+    def _process_mob_update(self, mob_data: dict):
+        """Processes a Mob Update message with nested health and gene information."""
+        mob_id = mob_data.get("mob_id")
+        
+        # Semantic Clarification: MobGene.death is the timestamp when the mob died, 
+        # while MobGene.expired is a boolean flag indicating if the gene has expired.
+        
+        health = mob_data.get("health", {})
+        genes = mob_data.get("genes", [])
+        
+        logging.info(f"Processing Mob Update for {mob_id}. Health: {health}, Genes: {genes}")
+        # TODO: Update local state with new mob and nested data
+        # TODO: Update the UI/view with the new state
+        pass
+    
+    def _process_world_update(self, world_data: dict):
+        """Processes a World Update message with location and resource information."""
+        location = world_data.get("location", {})
+        resources = world_data.get("resources", {})
+        
+        logging.info(f"Processing World Update. Location: {location}, Resources: {resources}")
+        # TODO: Update local map state
+        # TODO: Update the UI/view with new world state
+        pass
 
     def trigger_render_update(self):
         """Public method to be called by the main loop to signal the viewer to re-render."""
@@ -111,68 +147,3 @@ class ClientState:
         # In a real app, this would dispatch an event or call a specific viewer API.
         # For now, we log the signal.
         pass
-
-    async def send_message(self, message_type: str, payload: dict):
-        """Sends a structured message to the server."""
-        if self.websocket and self.websocket.open:
-            message = {
-                "type": message_type,
-                "payload": payload
-            }
-            try:
-                await self.websocket.send(json.dumps(message))
-                logging.info(f"Sent message type: {message_type}")
-            except Exception as e:
-                logging.error(f"Failed to send message {message_type}: {e}")
-        else:
-            logging.warning("WebSocket is not connected. Message not sent.")
-
-    async def send_move_mob(self, mob_id: int, x: int, y: int):
-        """Composes and sends a MOVE_MOB message."""
-        payload = {
-            "mobId": mob_id,
-            "targetLocation": {
-                "x": x,
-                "y": y
-            }
-        }
-        await self.send_message("MOVE_MOB", payload)
-
-    async def send_request_world_state(self, client_id: str):
-        """Composes and sends a REQUEST_WORLD_STATE message."""
-        payload = {
-            "clientId": client_id
-        }
-        await self.send_message("REQUEST_WORLD_STATE", payload)
-
-    def start(self):
-        """Starts the connection process in the event loop."""
-        try:
-            self.loop.run_until_complete(self.connect())
-        except KeyboardInterrupt:
-            logging.info("Client stopped by user (KeyboardInterrupt).")
-        finally:
-            logging.info("Client shutting down.")
-
-if __name__ == "__main__":
-    client = HexGenLifeClient(SERVER_URI)
-    client.start()
-    
-    # --- Simulation of the main application loop calling render updates ---
-    # In a real application, this would be managed by the GUI framework's main loop.
-    print("--- Simulating main loop running state update checks ---")
-    
-    # Simulate a state update received by the client (for testing the subscription path)
-    test_mob_update = {
-        "type": "STATE",
-        "MOB_UPDATE": {
-            "mobId": 1,
-            "health": {"hunger": 50.0, "fat": 10.0, "health": 80.0, "age": 500.0},
-            "brain": {"updated": "2026-04-08T11:00:00Z"},
-            "geneTraits": {"mobType": "B", "fitnessScore": 0.5, "death": None}
-        }
-    }
-    client.handle_incoming_message(test_mob_update)
-    
-    client.trigger_render_update()
-    print("--- Simulation finished ---")
