@@ -2,62 +2,102 @@ import asyncio
 import websockets
 import json
 import logging
+import random
+import sys
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Define the WebSocket server address (to be configured)
-SERVER_URI = "ws://localhost:8765" # Placeholder, this should be configurable
+# Define the WebSocket server address
+SERVER_URI = "ws://localhost:8765"
 
-# Placeholder for HexGenLifeClient, assuming it needs to be defined or imported
 class HexGenLifeClient:
-    def __init__(self, uri):
+    def __init__(self, uri, client_id):
         self.uri = uri
+        self.client_id = client_id
         self.websocket = None
-        self.loop = asyncio.get_event_loop()
-        self.state_manager = ClientState() # Initialize state manager here
-        
+        self.state_manager = ClientState()
+        self.tick_event = asyncio.Event()
+
     async def connect(self):
         """Establishes the WebSocket connection."""
-        logging.info(f"Attempting to connect to {self.uri}...")
+        logging.info(f"[{self.client_id}] Attempting to connect to {self.uri}...")
         try:
             self.websocket = await websockets.connect(self.uri)
-            logging.info("WebSocket connection established.")
-            # Start listening for messages in a separate task if necessary
-            # For now, we just keep the connection open.
+            logging.info(f"[{self.client_id}] WebSocket connection established.")
             return True
         except Exception as e:
-            logging.error(f"Connection failed: {e}")
+            logging.error(f"[{self.client_id}] Connection failed: {e}")
             return False
+
+    async def listen(self):
+        """Listens for incoming messages and updates client state."""
+        try:
+            async for raw_message in self.websocket:
+                message = json.loads(raw_message)
+                msg_type = message.get("type")
+                
+                if msg_type == "TICK_COMPLETE":
+                    logging.info(f"[{self.client_id}] Tick complete received.")
+                    self.tick_event.set()
+                else:
+                    self.state_manager.handle_incoming_message(message)
+        except websockets.exceptions.ConnectionClosed:
+            logging.warning(f"[{self.client_id}] Connection closed by server.")
+
+    async def autonomous_loop(self):
+        """Orchestrates autonomous actions synchronized with server ticks."""
+        logging.info(f"[{self.client_id}] Starting autonomous loop.")
+        while True:
+            await self.tick_event.wait()
+            self.tick_event.clear()
+            
+            # Perform exactly one move per tick
+            mob_id = f"mob_{self.client_id}"
+            target_x = random.randint(-10, 10)
+            target_y = random.randint(-10, 10)
+            await self.send_move_mob(mob_id, target_x, target_y)
+
 
     async def send_message(self, message_type: str, payload: dict):
         """Sends a message to the server, handling serialization and connection status."""
         if self.websocket:
-            message = {"type": message_type, "data": payload}
+            # Ensure clientId is in the payload for server verification/assignment
+            payload["clientId"] = self.client_id
+            message = {"type": message_type, "payload": payload}
             try:
                 await self.websocket.send(json.dumps(message))
-                logging.info(f"Sent message type: {message_type}")
+                logging.debug(f"[{self.client_id}] Sent message type: {message_type}")
             except Exception as e:
-                logging.error(f"Failed to send message {message_type}: {e}")
+                logging.error(f"[{self.client_id}] Failed to send message {message_type}: {e}")
         else:
-            logging.warning(f"WebSocket is not connected. Message type: {message_type} not sent.")
+            logging.warning(f"[{self.client_id}] WebSocket is not connected. Message type: {message_type} not sent.")
 
-    async def send_move_mob(self, mob_id: str | int, x: float, y: float):
-        """Sends a command to move a specific mob to coordinates (x, y)."""
-        mob_id_str = str(mob_id)
-        logging.info(f"Sending move command for mob {mob_id_str} to ({x}, {y})")
-        # Adjusted payload to match test expectation: {"mobId": mob_id, "targetLocation": {"x": x, "y": y}}
-        await self.send_message("MOVE_MOB", {"mobId": mob_id_str, "targetLocation": {"x": x, "y": y}})
+    async def send_move_mob(self, mob_id: str | int, x: int, y: int):
+        """Sends a command to move a specific mob with integer coordinates."""
+        logging.info(f"[{self.client_id}] Moving mob {mob_id} to ({x}, {y})")
+        await self.send_message("MOVE_MOB", {
+            "mobId": str(mob_id), 
+            "targetLocation": {"x": int(x), "y": int(y)}
+        })
 
-    async def send_request_world_state(self, client_id: str):
+
+    async def send_request_world_state(self):
         """Requests the current world state from the server."""
-        logging.info(f"Requesting world state for client {client_id}")
-        # Placeholder logic: send a request message type
-        await self.send_message("REQUEST_WORLD_STATE", {"clientId": client_id})
+        logging.info(f"[{self.client_id}] Requesting world state.")
+        await self.send_message("REQUEST_WORLD_STATE", {"clientId": self.client_id})
 
-    def start(self):
-        """Starts the connection process in the event loop."""
-        self.loop.run_until_complete(self.connect())
+    async def run(self):
+        """Main entry point for the client logic."""
+        if await self.connect():
+            # Initial request to ensure mob is created and state is synced
+            await self.send_request_world_state()
+            
+            # Start background tasks
+            listen_task = asyncio.create_task(self.listen())
+            loop_task = asyncio.create_task(self.autonomous_loop())
+            
+            await asyncio.gather(listen_task, loop_task)
 
 # --- Phase 3: State Management and Incoming Message Handling ---
 class ClientState:
@@ -117,33 +157,54 @@ class ClientState:
         return self.get_state()
 
     def _process_mob_update(self, mob_data: dict):
-        """Processes a Mob Update message with nested health and gene information."""
-        mob_id = mob_data.get("mob_id")
-        
-        # Semantic Clarification: MobGene.death is the timestamp when the mob died, 
-        # while MobGene.expired is a boolean flag indicating if the gene has expired.
-        
-        health = mob_data.get("health", {})
-        genes = mob_data.get("genes", [])
-        
-        logging.info(f"Processing Mob Update for {mob_id}. Health: {health}, Genes: {genes}")
-        # TODO: Update local state with new mob and nested data
-        # TODO: Update the UI/view with the new state
-        pass
+        """Processes a Mob Update message."""
+        mob_id = mob_data.get("mobId") or mob_data.get("mob_id")
+        if mob_id:
+            self._state["mobs"][mob_id] = mob_data
+            logging.info(f"Updated state for mob {mob_id}")
     
     def _process_world_update(self, world_data: dict):
-        """Processes a World Update message with location and resource information."""
-        location = world_data.get("location", {})
-        resources = world_data.get("resources", {})
+        """Processes a World Update message (snapshot)."""
+        mobs = world_data.get("mobs", [])
+        tiles = world_data.get("tiles", [])
         
-        logging.info(f"Processing World Update. Location: {location}, Resources: {resources}")
-        # TODO: Update local map state
-        # TODO: Update the UI/view with new world state
-        pass
+        for mob in mobs:
+            mob_id = mob.get("mob_id")
+            if mob_id:
+                self._state["mobs"][mob_id] = mob
+                
+        for tile in tiles:
+            tile_id = tile.get("id")
+            if tile_id:
+                self._state["worldTiles"][tile_id] = tile
+                
+        logging.info(f"Processed world snapshot: {len(mobs)} mobs, {len(tiles)} tiles.")
 
     def trigger_render_update(self):
         """Public method to be called by the main loop to signal the viewer to re-render."""
         logging.info("Client signaling viewer to re-render.")
-        # In a real app, this would dispatch an event or call a specific viewer API.
-        # For now, we log the signal.
+        pass
+
+async def main():
+    # Accept client IDs from command line arguments
+    client_ids = sys.argv[1:]
+    if not client_ids:
+        client_ids = ["client_1"]
+    
+    logging.info(f"Starting clients: {client_ids}")
+    
+    tasks = []
+    for cid in client_ids:
+        client = HexGenLifeClient(SERVER_URI, cid)
+        tasks.append(client.run())
+        
+    try:
+        await asyncio.gather(*tasks)
+    except KeyboardInterrupt:
+        logging.info("Shutting down clients.")
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
         pass
