@@ -46,25 +46,25 @@ class TestGameServer(unittest.TestCase):
 
     @patch.object(GameServer, '_handle_move_mob')
     @patch.object(GameServer, '_handle_request_world_state')
-    def test_receive_message_move_mob(self, mock_handle_request, mock_handle_move):
+    async def test_receive_message_move_mob(self, mock_handle_request, mock_handle_move):
         """Test receiving a MOVE_MOB message correctly routes to _handle_move_mob."""
         test_message = json.dumps({"type": "MOVE_MOB", "data": {"mob_id": "m1", "new_pos": "1,2"}})
-        self.server.receive_message(test_message)
+        await self.server.receive_message(test_message)
         mock_handle_move.assert_called_once()
         mock_handle_request.assert_not_called()
 
     @patch.object(GameServer, '_handle_move_mob')
     @patch.object(GameServer, '_handle_request_world_state')
-    def test_receive_message_request_world_state(self, mock_handle_request, mock_handle_move):
+    async def test_receive_message_request_world_state(self, mock_handle_request, mock_handle_move):
         """Test receiving a REQUEST_WORLD_STATE message correctly routes to _handle_request_world_state."""
         test_message = json.dumps({"type": "REQUEST_WORLD_STATE", "data": {"client_id": "c1", "scope": "world"}})
-        self.server.receive_message(test_message)
+        await self.server.receive_message(test_message)
         mock_handle_request.assert_called_once()
         mock_handle_move.assert_not_called()
 
-    def test_receive_message_invalid_json(self):
+    async def test_receive_message_invalid_json(self):
         """Test handling of malformed JSON."""
-        self.server.receive_message("{'type': 'INVALID'") # Invalid JSON structure
+        await self.server.receive_message("{'type': 'INVALID'") # Invalid JSON structure
         # In a real scenario, we would check for printed error or exception handling.
         # For this test, we just ensure it doesn't crash.
 
