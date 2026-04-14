@@ -88,16 +88,27 @@ class HexGenLifeClient:
         await self.send_message("REQUEST_WORLD_STATE", {"clientId": self.client_id})
 
     async def run(self):
-        """Main entry point for the client logic."""
-        if await self.connect():
-            # Initial request to ensure mob is created and state is synced
-            await self.send_request_world_state()
-            
-            # Start background tasks
-            listen_task = asyncio.create_task(self.listen())
-            loop_task = asyncio.create_task(self.autonomous_loop())
-            
-            await asyncio.gather(listen_task, loop_task)
+        """Main entry point for the client logic with auto-reconnect."""
+        base_delay = 1
+        max_delay = 30
+        backoff_factor = 2
+        delay = base_delay
+        
+        loop_task = asyncio.create_task(self.autonomous_loop())
+        
+        while True:
+            if await self.connect():
+                # Initial request to ensure mob is created and state is synced
+                delay = base_delay
+                await self.send_request_world_state()
+                
+                # Listen blocks until connection drops
+                await self.listen()
+                logging.warning(f"[{self.client_id}] Listen loop ended. Connection closed unexpectedly.")
+                
+            logging.info(f"[{self.client_id}] Reconnecting in {delay} seconds...")
+            await asyncio.sleep(delay)
+            delay = min(max_delay, delay * backoff_factor)
 
 # --- Phase 3: State Management and Incoming Message Handling ---
 class ClientState:
@@ -145,10 +156,20 @@ class ClientState:
     def handle_incoming_message(self, message: dict):
         """Delegates incoming messages to the state manager."""
         message_type = message.get("type")
+        # Server sends data under 'payload' per websocket_messages.json
+        payload = message.get("payload", message.get("data", {}))
         if message_type == "MOB_UPDATE":
-            self._process_mob_update(message.get("data", {}))
+            self._process_mob_update(payload)
         elif message_type == "WORLD_UPDATE":
-            self._process_world_update(message.get("data", {}))
+            self._process_world_update(payload)
+        elif message_type == "ERROR":  # Gap #6 — handle server error responses
+            code = payload.get("errorCode", "UNKNOWN")
+            msg = payload.get("errorMessage", "")
+            logging.warning(f"Server error [{code}]: {msg}")
+        elif message_type == "HEX_CREATED":
+            self._process_hex_created(payload)
+        elif message_type == "TICK_COMPLETE":
+            pass  # handled in listen() via tick_event
         else:
             logging.warning(f"Unknown message type received: {message_type}")
 
@@ -164,21 +185,39 @@ class ClientState:
             logging.info(f"Updated state for mob {mob_id}")
     
     def _process_world_update(self, world_data: dict):
-        """Processes a World Update message (snapshot)."""
+        """Processes a World Update message (snapshot).
+        
+        Accepts either the documented hexId/tileData shape (from server) or
+        raw row dicts (legacy / test fixtures).
+        """
         mobs = world_data.get("mobs", [])
         tiles = world_data.get("tiles", [])
-        
+
         for mob in mobs:
-            mob_id = mob.get("mob_id")
+            mob_id = mob.get("mob_id") or mob.get("mobId")
             if mob_id:
                 self._state["mobs"][mob_id] = mob
-                
+
         for tile in tiles:
-            tile_id = tile.get("id")
-            if tile_id:
+            # Documented schema: {hexId, tileData: {location, resources, updated}}
+            if "hexId" in tile:
+                tile_id = tile["hexId"]
+            else:
+                tile_id = tile.get("id")
+            if tile_id is not None:
                 self._state["worldTiles"][tile_id] = tile
-                
+
         logging.info(f"Processed world snapshot: {len(mobs)} mobs, {len(tiles)} tiles.")
+
+    def _process_hex_created(self, payload: dict):
+        hex_id = payload.get("hexId")
+        tile_data = payload.get("tileData")
+        if hex_id and tile_data:
+            self._state["worldTiles"][hex_id] = tile_data
+            loc = tile_data.get("location", {})
+            cx = loc.get("centerX", "?")
+            cy = loc.get("centerY", "?")
+            logging.info(f"HEX_CREATED: new tile {hex_id} at ({cx}, {cy})")
 
     def trigger_render_update(self):
         """Public method to be called by the main loop to signal the viewer to re-render."""

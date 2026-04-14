@@ -3,14 +3,15 @@
     "MOVE_MOB": {
       "type": "COMMAND",
       "payload": {
-        "mobId": "integer",
+        "mobId": "string",
         "targetLocation": {
           "x": "integer",
           "y": "integer"
         }
       },
-      "description": "Client requests a mob to move to a target location."
+      "description": "Client requests a mob to move to a target location. Coordinates x and y must be integers."
     },
+
     "REQUEST_WORLD_STATE": {
       "type": "COMMAND",
       "payload": {
@@ -23,7 +24,7 @@
     "MOB_UPDATE": {
       "type": "STATE",
       "payload": {
-        "mobId": "integer",
+        "mobId": "string",
         "health": {
           "hunger": "real",
           "fat": "real",
@@ -58,6 +59,41 @@
         }
       },
       "description": "Server broadcasts an update for a specific hex tile's state."
+    },
+    "ERROR": {
+      "type": "STATE",
+      "payload": {
+        "errorCode": "string",
+        "errorMessage": "string"
+      },
+      "description": "Server sends an error response to a client regarding command execution success/failure or malformed message."
+    },
+    "HEX_CREATED": {
+      "type": "STATE",
+      "payload": {
+        "hexId": "string",
+        "tileData": {
+          "location": {
+            "centerX": "real",
+            "centerY": "real"
+          },
+          "corners": {
+            "hexcp1": "array [x, y]",
+            "hexcp2": "array [x, y]",
+            "hexcp3": "array [x, y]",
+            "hexcp4": "array [x, y]",
+            "hexcp5": "array [x, y]",
+            "hexcp6": "array [x, y]",
+            "hexcp7": "array [x, y]"
+          },
+          "resources": {
+            "water": "real",
+            "grass": "real"
+          },
+          "created": "timestamp"
+        }
+      },
+      "description": "Server broadcasts a new hex tile creation event. Only sent to clients whose controlled mobs are within HEX_CREATION_BROADCAST_RANGE (constant = 100 units) of the new tile's centre. Clients should add this tile to their local worldTiles state."
     }
   }
 }

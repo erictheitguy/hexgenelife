@@ -1,34 +1,29 @@
-# # Mob Schema
+# Mob Schema
 
-Mob schema is broken into multiple tables and joined by ID.
+Mob schema is broken into multiple tables and joined by ID. The tables reflect the schema initialized in `server.py`.
 
-First table is the Mob Gene Type.
-Second table is the Mob health stats.
-Third table is the mob brain.
-
-**Table MobGene**
-ID : Integer PRIMARY KEY
+**Table mobs**
+mob_id : Text PRIMARY KEY
+position : Text (JSON object with integer "x" and "y" coordinates)
 mob_type : Text
 generation : Integer
-parent_ids : Text
-genome : Text
-actual_traits : Text
-    JSON Data
-fitness_score : Real
-death : Text (TimeStamp)
-expired : integer
-    Death flag if alive or not.
-Created : Text (TimeStamp)
-Updated : Text (TimeStamp)
+timestamp : Real
 
-**Table MobHealth**
-ID : Integer PRIMARY KEY
-Hunger : Real
-Fat : Real
-Health : Real
-Age : Real
-Updated : Text (TimeStamp)
+**Table mob_genes**
+mob_id : Text
+mobType : Text
+fitnessScore : Real
+death : Real (Timestamp of death, NULL if not dead)
+expired : Boolean (Flag if gene has expired)
+PRIMARY KEY (mob_id, mobType)
 
-**Table MobBrain**
-ID : Integer PRIMARY KEY
-Updated: Text (TimeStamp)
+**Table mob_health**
+mob_id : Text PRIMARY KEY
+hunger : Real
+fat : Real
+health : Real
+age : Real
+
+**Table mob_brain**
+mob_id : Text PRIMARY KEY
+cognition_attributes : Text

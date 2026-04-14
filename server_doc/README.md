@@ -1,4 +1,5 @@
 # # Main Server Documentation
-Synspois : The server connects to a sqllite3 datase base that contains the data. The server and clients will operate on a tick schedule. In that each client gets a limited amount of actions it can perform per tick. The server will keep track of all active mobs and once all active mobs have performed their actions for that tick, it will inform connected clients that they can began submitting the next set of actions. The server will also handle informing the client if two mobs interacted and the outcome of that interactions. Interactions could be breding or attacking in order to reduce the health of a mob so that it may be consumed for food. 
+
+Synspois : The server connects to a sqllite3 datase base that contains the data. The server and clients will operate on a tick schedule. In that each client gets a limited amount of actions it can perform per tick. The server will keep track of all active mobs and once all active mobs have performed their actions for that tick, it will inform connected clients that they can began submitting the next set of actions. The server will also handle informing the client if two mobs interacted and the outcome of that interactions. Interactions could be breding or attacking in order to reduce the health of a mob so that it may be consumed for food.
 
 For implementation see server_implementation.md

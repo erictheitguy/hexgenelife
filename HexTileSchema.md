@@ -1,4 +1,4 @@
-# #SqlLite3 Database schema for the hext tiles
+# SqlLite3 Database schema for the hext tiles
 
 loc : Text
     loc is storing json data.

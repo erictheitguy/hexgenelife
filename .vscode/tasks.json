@@ -1,0 +1,15 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Fix HexTileSchema Markdown Heading",
+			"type": "commit",
+			"command": "fix: correct markdown heading in HexTileSchema"
+		},
+		{
+			"label": "Fix HexTileSchema Markdown Heading",
+			"type": "commit",
+			"command": "fix: correct markdown heading in HexTileSchema"
+		}
+	]
+}
