@@ -34,12 +34,14 @@ class DBReader:
                 
         # Load Mobs
         cursor.execute("""
-            SELECT m.mob_id, m.position, m.mob_type, m.generation,
+            SELECT m.mob_id, m.position, m.mob_type, m.generation, m.species_id,
                    h.hunger, h.fat, h.health, h.age,
-                   g.fitnessScore
+                   g.fitnessScore,
+                   s.name as species_name
             FROM mobs m
             JOIN mob_health h ON m.mob_id = h.mob_id
             LEFT JOIN mob_genes g ON m.mob_id = g.mob_id
+            LEFT JOIN species s ON m.species_id = s.species_id
             WHERE h.health > 0
         """)
         mobs = []
@@ -52,6 +54,8 @@ class DBReader:
                     "y": pos.get("y", 0),
                     "type": row["mob_type"],
                     "generation": row["generation"],
+                    "species_id": row["species_id"],
+                    "species_name": row["species_name"] or "Unknown",
                     "health": row["health"],
                     "hunger": row["hunger"],
                     "fat": row["fat"],

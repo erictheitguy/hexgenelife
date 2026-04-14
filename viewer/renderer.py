@@ -92,7 +92,7 @@ class Renderer:
             return
             
         panel_w = 300
-        panel_h = 220
+        panel_h = 240
         panel_rect = pygame.Rect(self.screen.get_width() - panel_w - 10, 10, panel_w, panel_h)
         
         # Transparent background
@@ -109,6 +109,7 @@ class Renderer:
         if obj_type == "mob":
             lines = [
                 f"ID: {selected_obj['id']}",
+                f"Species: {selected_obj.get('species_name', 'Unknown')}",
                 f"Type: {selected_obj['type']}",
                 f"Pos: ({selected_obj['x']}, {selected_obj['y']})",
                 f"Health: {selected_obj['health']:.1f}",

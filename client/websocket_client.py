@@ -5,6 +5,8 @@ import logging
 import random
 import sys
 
+from client.mob import Mob
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -18,6 +20,9 @@ class HexGenLifeClient:
         self.websocket = None
         self.state_manager = ClientState()
         self.tick_event = asyncio.Event()
+        # Phase 4.5 — managed Mob objects
+        self.mob_objects: dict[str, Mob] = {}  # {mob_id: Mob}
+        self._look_events: dict[str, asyncio.Event] = {}  # {mob_id: Event}
 
     async def connect(self):
         """Establishes the WebSocket connection."""
@@ -40,23 +45,78 @@ class HexGenLifeClient:
                 if msg_type == "TICK_COMPLETE":
                     logging.info(f"[{self.client_id}] Tick complete received.")
                     self.tick_event.set()
+                elif msg_type == "LOOK_RESULT":
+                    # Phase 4.5 — feed LOOK data to the mob's brain
+                    payload = message.get("payload", {})
+                    mob_self = payload.get("mob_self", {})
+                    look_mob_id = mob_self.get("mobId", "")
+                    if look_mob_id in self.mob_objects:
+                        self.mob_objects[look_mob_id].store_look_result(payload)
+                        self.mob_objects[look_mob_id].update_state({
+                            "health": mob_self,
+                        })
+                    evt = self._look_events.get(look_mob_id)
+                    if evt:
+                        evt.set()
+                    self.state_manager.handle_incoming_message(message)
                 else:
                     self.state_manager.handle_incoming_message(message)
+                    # Update mob objects with MOB_UPDATE data
+                    if msg_type == "MOB_UPDATE":
+                        payload = message.get("payload", {})
+                        upd_mob_id = payload.get("mobId", "")
+                        if upd_mob_id in self.mob_objects:
+                            self.mob_objects[upd_mob_id].update_state(payload)
         except websockets.exceptions.ConnectionClosed:
             logging.warning(f"[{self.client_id}] Connection closed by server.")
 
     async def autonomous_loop(self):
-        """Orchestrates autonomous actions synchronized with server ticks."""
+        """Orchestrates autonomous actions synchronized with server ticks.
+
+        Phase 4.5: Uses Mob objects with brain-driven decision making.
+        Each tick: LOOK → brain thinks → send resulting action.
+        Falls back to random movement if brain produces no action.
+        """
         logging.info(f"[{self.client_id}] Starting autonomous loop.")
+
+        # Ensure a Mob object exists for this client
+        mob_id = f"mob_{self.client_id}"
+        if mob_id not in self.mob_objects:
+            self.mob_objects[mob_id] = Mob(mob_id)
+            self._look_events[mob_id] = asyncio.Event()
+
         while True:
             await self.tick_event.wait()
             self.tick_event.clear()
-            
-            # Perform exactly one move per tick
-            mob_id = f"mob_{self.client_id}"
-            target_x = random.randint(-10, 10)
-            target_y = random.randint(-10, 10)
-            await self.send_move_mob(mob_id, target_x, target_y)
+
+            mob = self.mob_objects[mob_id]
+            mob.reset_tick()
+
+            # Step 1: Send LOOK command
+            await self.send_message("LOOK", {"mobId": mob_id})
+
+            # Wait briefly for LOOK_RESULT (with timeout)
+            look_evt = self._look_events[mob_id]
+            look_evt.clear()
+            try:
+                await asyncio.wait_for(look_evt.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                logging.warning(f"[{self.client_id}] LOOK_RESULT timeout")
+
+            # Step 2: Brain thinks and produces an action
+            action = mob.get_tick_action()
+
+            if action and "action" in action:
+                action_type = action["action"]
+                action_payload = action.get("payload", {})
+                action_payload["mobId"] = mob_id
+                await self.send_message(action_type, action_payload)
+                logging.info(f"[{self.client_id}] Brain action: {action_type}")
+            else:
+                # Fallback: random movement
+                target_x = random.randint(-10, 10)
+                target_y = random.randint(-10, 10)
+                await self.send_move_mob(mob_id, target_x, target_y)
 
 
     async def send_message(self, message_type: str, payload: dict):
@@ -168,6 +228,8 @@ class ClientState:
             logging.warning(f"Server error [{code}]: {msg}")
         elif message_type == "HEX_CREATED":
             self._process_hex_created(payload)
+        elif message_type == "LOOK_RESULT":
+            self._process_look_result(payload)
         elif message_type == "TICK_COMPLETE":
             pass  # handled in listen() via tick_event
         else:
@@ -218,6 +280,18 @@ class ClientState:
             cx = loc.get("centerX", "?")
             cy = loc.get("centerY", "?")
             logging.info(f"HEX_CREATED: new tile {hex_id} at ({cx}, {cy})")
+
+    def _process_look_result(self, payload: dict):
+        """Process LOOK_RESULT — store visible tiles/mobs in state."""
+        mob_self = payload.get("mob_self", {})
+        mob_id = mob_self.get("mobId", "")
+        if mob_id:
+            self._state.setdefault("look_results", {})[mob_id] = payload
+            logging.info(
+                f"LOOK_RESULT for {mob_id}: "
+                f"{len(payload.get('tiles', []))} tiles, "
+                f"{len(payload.get('mobs', []))} mobs visible"
+            )
 
     def trigger_render_update(self):
         """Public method to be called by the main loop to signal the viewer to re-render."""

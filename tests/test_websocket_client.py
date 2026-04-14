@@ -203,10 +203,10 @@ class TestHexGenLifeClientAsync(unittest.IsolatedAsyncioTestCase):
         except asyncio.CancelledError:
             task.cancel()
 
-        # At least one MOVE_MOB should have been sent
+        # At least one LOOK should have been sent (first phase of tick cycle)
         self.assertTrue(mock_ws.send.called)
         sent = json.loads(mock_ws.send.call_args_list[0][0][0])
-        self.assertEqual(sent["type"], "MOVE_MOB")
+        self.assertEqual(sent["type"], "LOOK")
 
 
 if __name__ == "__main__":

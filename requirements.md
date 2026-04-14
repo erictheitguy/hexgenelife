@@ -111,8 +111,68 @@ Try to maintain test driven develeopment.
 
 ## Phase 4 Specific Requirements Additions
 
- - Start the implementation of the basic mob functions. 
- - 
+Start the implementation of basic mob functions. See `client_doc\mob.md` `client_doc\MobBehavior.md` `client_doc\MobBrain.md`.
+
+Phase 4 is broken into the following sub-phases:
+
+### 4.1 Schema & Data Model Expansion
+- Add `mob_physical` table (size, speed, mass, vision, metabolism, diet_type spectrum, attack_power, defense, camouflage).
+- Extend `mob_health` with energy, life_stage, birth_tick, max_age.
+- Extend `mob_brain` with decision_tree (JSON) and memory (JSON).
+- Add `brain_functions` table — stores callable function definitions, loaded at runtime.
+- Update `_ensure_client_mob()` with type-aware defaults (prey vs predator).
+- Update message payloads (`MOB_UPDATE`, `WORLD_UPDATE`) to include new fields.
+
+### 4.2 LOOK Action & Vision System
+- New `LOOK` server action: mob observes surroundings; server returns visible tiles and mobs.
+- Visibility gated by observer's `vision`, target's `camouflage` (negated by recent movement speed and `size`).
+- Track per-mob last-tick movement distance for speed-based detection penalty.
+
+### 4.3 Metabolism, Energy & Basic Consumption
+- New `EAT_GRASS` action: herbivores consume tile grass → gain fat. Efficiency scales with `diet_type` spectrum.
+- Fat→energy conversion each tick (active vs resting metabolism rates).
+- Energy cost for all actions (MOVE_MOB, EAT_GRASS, LOOK).
+- Starvation cascade: no energy → burn fat → no fat → lose health → death.
+
+### 4.4 Brain Function Repository (Database)
+- Brain functions stored in `brain_functions` DB table, pulled at runtime.
+- `client/brain_registry.py` maps function_id → callable Python function.
+- Starter functions: evaluate_state, evaluate_hunger, evaluate_danger, evaluate_movement, action_eat, action_move, action_look.
+- Memory system: per-mob JSON blob persisted between ticks.
+
+### 4.5 Decision Tree Engine (Client-Side)
+- `client/mob_brain.py` — traverses decision tree JSON (root node → evaluate → follow edges → emit action).
+- `client/mob.py` — Mob class wrapping state + brain.
+- Replace random movement in `autonomous_loop` with: LOOK → think → act cycle.
+- Default decision trees for prey (eat/flee) and predator (hunt/wander).
+
+### 4.6 Combat System
+- New `ATTACK_MOB` action: simple extensible damage formula (attack_power × √mass, speed-based evasion, defense reduction).
+- Death when health ≤ 0. Dead mobs become consumable carcasses.
+- Log all interactions to `interaction_history`.
+- Brain functions: evaluate_attack_target, evaluate_flee, action_attack.
+
+### 4.7 Carnivore Consumption (EAT_MOB)
+- New `EAT_MOB` action: carnivores eat dead mobs → gain fat. Efficiency scales with `diet_type`.
+- Omnivores (diet_type ~0.5) can eat both grass and mobs with moderate efficiency.
+- Carcass removed from world when fully consumed.
+
+### 4.8 Life Cycle & Aging
+- Age increments each server tick. Life stages: baby→juvenile→adult→senior.
+- Stat multipliers by stage (baby 0.3×, juvenile 0.7×, adult 1.0×, senior declining).
+- Natural death when age > max_age.
+- Baby/juvenile cannot breed.
+
+### 4.9 Breeding & Genetics
+- New `BREED` action: two adult, same-species mobs → one offspring.
+- Genetic crossover: child trait = weighted average of parents + gaussian mutation.
+- Brain mutation: chance to add/remove/rewire decision tree edges.
+- No gender or gestation — immediate offspring creation.
+
+### 4.10 Species & Taxonomy
+- Species determined by standard-deviation statistical model: if a mob's adult stats average z-score exceeds threshold vs species mean, it's classified as a new species.
+- `species` and `family_tree` tables for lineage tracking.
+- Procedural Latin-sounding species name generator.
 
 
 ## Phase 5 Specific Requirements Additions
