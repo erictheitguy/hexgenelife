@@ -12,7 +12,8 @@ import json
 import logging
 from client.brain_registry import get_function
 
-logging.basicConfig(level=logging.INFO)
+# Configure logging
+logger = logging.getLogger("MobBrain")
 
 MAX_TREE_DEPTH = 20  # prevent infinite loops
 
@@ -20,16 +21,18 @@ MAX_TREE_DEPTH = 20  # prevent infinite loops
 class MobBrain:
     """Decision tree engine for a single mob."""
 
-    def __init__(self, decision_tree: dict, memory: dict | None = None):
+    def __init__(self, decision_tree: dict, memory: dict | None = None, logger=None):
         """
         Args:
             decision_tree: JSON-derived dict with 'root' and 'nodes' keys.
             memory: persistent memory dict, loaded from mob_brain.memory.
+            logger: optional logger instance for per-mob logging.
         """
         self.tree = decision_tree
         self.memory = memory or {}
         self.root_id = decision_tree.get("root", "evaluate_state")
         self.nodes = decision_tree.get("nodes", {})
+        self.logger = logger or logging.getLogger("MobBrain")
 
     def think(self, mob_state: dict) -> dict | None:
         """Traverse the decision tree and return an action command or None.
@@ -45,33 +48,46 @@ class MobBrain:
         matrix = []
         depth = 0
 
+        self.logger.debug(f"--- Brain Thinking Start (root={current_node_id}) ---")
+
         while current_node_id and depth < MAX_TREE_DEPTH:
             depth += 1
             node = self.nodes.get(current_node_id)
             if not node:
-                logging.warning(f"Brain: unknown node '{current_node_id}'")
+                self.logger.warning(f"Brain: unknown node '{current_node_id}'")
                 break
 
             func_id = node.get("function", current_node_id)
+            self.logger.debug(f"Evaluating node '{current_node_id}' (func={func_id})")
+            
             func = get_function(func_id)
             if not func:
-                logging.warning(f"Brain: no registered function '{func_id}'")
+                self.logger.warning(f"Brain: no registered function '{func_id}'")
                 break
-
+            self.logger.debug(f"Brain: function '{func_id}' is {func}")
             outputs = node.get("outputs", [])
-            result = func(matrix, self.memory, outputs, mob_state)
-
+            try:
+                result = func(matrix, self.memory, outputs, mob_state)
+            except Exception as e:
+                self.logger.error(f"Brain: Error in function '{func_id}': {e}", exc_info=True)
+                break
+            
             if result is None:
+                self.logger.debug(f"Node '{current_node_id}' returned None. Ending traversal.")
                 break
 
             # If the function returned an action, we're done
             if "action" in result:
+                self.logger.debug(f"Action produced: {result['action']}")
                 return result
 
             # Otherwise follow the tree
             matrix = result.get("matrix", matrix)
-            current_node_id = result.get("next")
+            next_node = result.get("next")
+            self.logger.debug(f"Node '{current_node_id}' -> next: {next_node}")
+            current_node_id = next_node
 
+        self.logger.debug("--- Brain Thinking End (no action) ---")
         return None  # tree exhausted without producing an action
 
     def get_memory(self) -> dict:
@@ -85,19 +101,27 @@ class MobBrain:
 
 # Default decision trees for prey and predator
 PREY_DECISION_TREE = {
-    "root": "action_look_first",
+    "root": "evaluate_state",
     "nodes": {
-        "action_look_first": {
-            "function": "action_look",
-            "outputs": []
-        },
         "evaluate_state": {
             "function": "evaluate_state",
-            "outputs": ["evaluate_hunger", "evaluate_danger_check"]
+            "outputs": ["evaluate_hunger", "evaluate_breed_energy"]
         },
         "evaluate_hunger": {
             "function": "evaluate_hunger",
-            "outputs": ["action_eat", "evaluate_danger_check"]
+            "outputs": ["action_eat", "evaluate_breed_energy"]
+        },
+        "evaluate_breed_energy": {
+            "function": "evaluate_breed_energy",
+            "outputs": ["find_partner", "evaluate_danger_check"]
+        },
+        "find_partner": {
+            "function": "find_partner",
+            "outputs": ["action_breed", "evaluate_movement"]
+        },
+        "action_breed": {
+            "function": "action_breed",
+            "outputs": []
         },
         "evaluate_danger_check": {
             "function": "evaluate_danger",
@@ -119,23 +143,39 @@ PREY_DECISION_TREE = {
 }
 
 PREDATOR_DECISION_TREE = {
-    "root": "action_look_first",
+    "root": "evaluate_state",
     "nodes": {
-        "action_look_first": {
-            "function": "action_look",
-            "outputs": []
-        },
         "evaluate_state": {
             "function": "evaluate_state",
-            "outputs": ["evaluate_hunger_pred", "evaluate_hunt"]
+            "outputs": ["evaluate_hunger_pred", "evaluate_breed_energy"]
         },
         "evaluate_hunger_pred": {
             "function": "evaluate_hunger",
-            "outputs": ["evaluate_hunt", "evaluate_hunt"]
+            "outputs": ["evaluate_eat_carcass", "evaluate_eat_carcass"]
+        },
+        "evaluate_eat_carcass": {
+            "function": "evaluate_eat_carcass",
+            "outputs": ["action_eat_mob", "evaluate_hunt"]
+        },
+        "action_eat_mob": {
+            "function": "action_eat_mob",
+            "outputs": []
         },
         "evaluate_hunt": {
             "function": "evaluate_attack_target",
             "outputs": ["action_attack", "evaluate_movement"]
+        },
+        "evaluate_breed_energy": {
+            "function": "evaluate_breed_energy",
+            "outputs": ["find_partner", "evaluate_hunt"]
+        },
+        "find_partner": {
+            "function": "find_partner",
+            "outputs": ["action_breed", "evaluate_hunt"]
+        },
+        "action_breed": {
+            "function": "action_breed",
+            "outputs": []
         },
         "evaluate_movement": {
             "function": "evaluate_movement",

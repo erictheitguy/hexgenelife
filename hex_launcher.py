@@ -11,9 +11,13 @@ import sys
 # Paths
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(ROOT_DIR, "server", "game_state.db")
-SERVER_SCRIPT = os.path.join(ROOT_DIR, "server", "server.py")
-CLIENT_SCRIPT = os.path.join(ROOT_DIR, "client", "websocket_client.py")
-VIEWER_SCRIPT = os.path.join(ROOT_DIR, "viewer", "viewer_main.py")
+
+# Add project root to path for imports
+if ROOT_DIR not in sys.path:
+    sys.path.append(ROOT_DIR)
+
+from server.db_init import DatabaseInitializer
+from server.mob_manager import MobManager
 
 class HexLauncher:
     def __init__(self, root):
@@ -91,14 +95,8 @@ class HexLauncher:
 
     def setup_create_mob_ui(self, parent):
         fields = [
-            ("Mob ID", "new_mob_1"),
+            ("Mob ID", f"mob_{random.randint(100, 999)}"),
             ("Type", "prey"),
-            ("Health", "100.0"),
-            ("Hunger", "0.0"),
-            ("Fat", "0.0"),
-            ("Age", "0.0"),
-            ("Generation", "1"),
-            ("Fitness Score", "100.0")
         ]
         
         self.create_entries = {}
@@ -114,7 +112,7 @@ class HexLauncher:
         btn_frame = ttk.Frame(parent)
         btn_frame.grid(row=len(fields), column=0, columnspan=2, pady=10)
         
-        ttk.Button(btn_frame, text="Randomize Values", command=self.randomize_create_fields).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Randomize", command=self.randomize_create_fields).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Save & Launch Client", command=self.create_and_launch).pack(side=tk.LEFT, padx=5)
 
     def randomize_create_fields(self):
@@ -124,15 +122,6 @@ class HexLauncher:
         mtype = random.choice(["prey", "predator"])
         self.create_entries["Type"].delete(0, tk.END)
         self.create_entries["Type"].insert(0, mtype)
-        
-        self.create_entries["Health"].delete(0, tk.END)
-        self.create_entries["Health"].insert(0, str(round(random.uniform(50, 100), 1)))
-        
-        self.create_entries["Hunger"].delete(0, tk.END)
-        self.create_entries["Hunger"].insert(0, "0.0")
-        
-        self.create_entries["Age"].delete(0, tk.END)
-        self.create_entries["Age"].insert(0, "0.0")
 
     # --- Actions ---
 
@@ -144,7 +133,8 @@ class HexLauncher:
         try:
             env = os.environ.copy()
             env["PYTHONPATH"] = ROOT_DIR
-            self.server_proc = subprocess.Popen([sys.executable, SERVER_SCRIPT], env=env, cwd=ROOT_DIR)
+            # Run server as a module to handle relative imports correctly
+            self.server_proc = subprocess.Popen([sys.executable, "-m", "server.server"], env=env, cwd=ROOT_DIR)
             self.server_status_var.set("Status: Running")
             self.btn_start_server.config(state=tk.DISABLED)
             self.btn_stop_server.config(state=tk.NORMAL)
@@ -176,11 +166,21 @@ class HexLauncher:
             
         try:
             conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT mob_id FROM mobs")
+            # Ensure the table and columns exist before querying
+            DatabaseInitializer.initialize_db(conn)
+            
+            cursor.execute("SELECT mob_id, is_active FROM mobs")
             for row in cursor.fetchall():
-                status = " (Running)" if row[0] in self.client_procs else ""
-                self.mob_listbox.insert(tk.END, f"{row[0]}{status}")
+                mid = row["mob_id"]
+                is_active = row["is_active"]
+                status = ""
+                if mid in self.client_procs:
+                    status += " (Managed)"
+                if is_active:
+                    status += " (Active)"
+                self.mob_listbox.insert(tk.END, f"{mid}{status}")
             conn.close()
         except Exception as e:
             print(f"Error querying DB: {e}")
@@ -218,8 +218,8 @@ class HexLauncher:
         try:
             env = os.environ.copy()
             env["PYTHONPATH"] = ROOT_DIR
-            # Pass all client_ids as separate arguments
-            proc = subprocess.Popen([sys.executable, CLIENT_SCRIPT] + client_ids, env=env, cwd=ROOT_DIR)
+            # Run client as module. websocket_client.py main() handles multiple client_ids as sys.argv[1:]
+            proc = subprocess.Popen([sys.executable, "-m", "client.websocket_client"] + client_ids, env=env, cwd=ROOT_DIR)
             
             # Track this process for all mob_ids it handles
             for mid in mob_ids:
@@ -239,37 +239,26 @@ class HexLauncher:
             messagebox.showerror("Error", "Mob ID is required.")
             return
             
-        # Check if exists
+        client_id = mob_id.replace("mob_", "")
+        mob_type = self.create_entries["Type"].get().lower()
+
         try:
             conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1 FROM mobs WHERE mob_id = ?", (mob_id,))
-            if cursor.fetchone():
+            # Ensure DB is initialized (tables exist)
+            DatabaseInitializer.initialize_db(conn)
+            
+            manager = MobManager(conn)
+            if manager.mob_exists(mob_id):
                 messagebox.showerror("Error", f"Mob {mob_id} already exists.")
                 conn.close()
                 return
             
-            # Insert into all tables
-            timestamp = 0.0 # Will be updated by server/logic
-            cursor.execute("INSERT INTO mobs (mob_id, position, mob_type, generation, timestamp) VALUES (?, ?, ?, ?, ?)",
-                           (mob_id, json.dumps({"x": 0, "y": 0}), self.create_entries["Type"].get(), 
-                            int(self.create_entries["Generation"].get()), timestamp))
-            
-            cursor.execute("INSERT INTO mob_genes (mob_id, mobType, fitnessScore, death, expired) VALUES (?, ?, ?, ?, ?)",
-                           (mob_id, self.create_entries["Type"].get(), float(self.create_entries["Fitness Score"].get()), None, False))
-            
-            cursor.execute("INSERT INTO mob_health (mob_id, hunger, fat, health, age) VALUES (?, ?, ?, ?, ?)",
-                           (mob_id, float(self.create_entries["Hunger"].get()), float(self.create_entries["Fat"].get()), 
-                            float(self.create_entries["Health"].get()), float(self.create_entries["Age"].get())))
-            
-            cursor.execute("INSERT INTO mob_brain (mob_id, cognition_attributes) VALUES (?, ?)",
-                           (mob_id, json.dumps({})))
-            
-            conn.commit()
+            # Use MobManager to create entries in all tables:
+            # mobs, mob_genes, mob_health, mob_brain, mob_physical, and species/family_tree
+            manager.ensure_client_mob(client_id, mob_type=mob_type)
             conn.close()
             
-            # Launch
-            client_id = mob_id.replace("mob_", "")
+            # Launch the client
             self.launch_client(client_id, mob_id)
             messagebox.showinfo("Success", f"Mob {mob_id} created and client launched.")
             self.tabs.select(0) # Switch to list

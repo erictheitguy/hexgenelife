@@ -113,7 +113,7 @@ class TestHandleLook(unittest.IsolatedAsyncioTestCase):
         """LOOK with unknown mob should return error."""
         mock_ws = AsyncMock()
         with unittest.mock.patch.object(self.server, "send_error",
-                                         new_callable=AsyncMock) as mock_err:
+                                          new_callable=AsyncMock) as mock_err:
             await self.server._handle_look({"mobId": "ghost"}, mock_ws)
             mock_err.assert_awaited_once()
 
@@ -162,11 +162,11 @@ class TestHandleEatGrass(unittest.IsolatedAsyncioTestCase):
         self.server.clients.add(mock_ws)
         self.server._ws_to_mob[mock_ws] = "mob_eater"
 
-        fat_before = self.server._get_mob_health("mob_eater")["fat"]
+        energy_before = self.server._get_mob_health("mob_eater")["energy"]
         await self.server._handle_eat_grass({"mobId": "mob_eater"}, mock_ws)
-        fat_after = self.server._get_mob_health("mob_eater")["fat"]
+        energy_after = self.server._get_mob_health("mob_eater")["energy"]
 
-        self.assertGreater(fat_after, fat_before)
+        self.assertGreater(energy_after, energy_before)
 
     async def test_eat_grass_decreases_tile_grass(self):
         """Eating should reduce the tile's grass value."""
@@ -192,7 +192,7 @@ class TestHandleEatGrass(unittest.IsolatedAsyncioTestCase):
         self.server.clients.add(mock_ws)
 
         await self.server._handle_eat_grass({"mobId": "mob_herb"}, mock_ws)
-        herb_fat = self.server._get_mob_health("mob_herb")["fat"]
+        herb_energy = self.server._get_mob_health("mob_herb")["energy"]
 
         # Reset tile grass for fair comparison
         cursor = self.server.db_conn.cursor()
@@ -200,11 +200,11 @@ class TestHandleEatGrass(unittest.IsolatedAsyncioTestCase):
         self.server.db_conn.commit()
 
         await self.server._handle_eat_grass({"mobId": "mob_carn"}, mock_ws)
-        carn_fat = self.server._get_mob_health("mob_carn")["fat"]
+        carn_energy = self.server._get_mob_health("mob_carn")["energy"]
 
-        # Both started with fat=10.0, herb should gain more
-        herb_gain = herb_fat - 10.0
-        carn_gain = carn_fat - 10.0
+        # Both started with energy=50.0, herb should gain more
+        herb_gain = herb_energy - 50.0
+        carn_gain = carn_energy - 50.0
         self.assertGreater(herb_gain, carn_gain,
                           f"Herbivore gain ({herb_gain}) should exceed "
                           f"carnivore gain ({carn_gain})")
@@ -219,7 +219,7 @@ class TestHandleEatGrass(unittest.IsolatedAsyncioTestCase):
 
         mock_ws = AsyncMock()
         with unittest.mock.patch.object(self.server, "send_error",
-                                         new_callable=AsyncMock) as mock_err:
+                                          new_callable=AsyncMock) as mock_err:
             await self.server._handle_eat_grass({"mobId": "mob_starving"}, mock_ws)
             mock_err.assert_awaited_once()
             self.assertIn("NO_GRASS", mock_err.call_args[0][1])
@@ -441,7 +441,7 @@ class TestMetabolism(unittest.IsolatedAsyncioTestCase):
         _cleanup(DB_PATH)
 
     async def test_metabolism_updates_values(self):
-        """Metabolism should increase hunger and age, and burn fat for energy."""
+        """Metabolism should suppress hunger when fat > 0, increase age, and burn fat for energy."""
         self.server._ensure_client_mob("meta")
         h1 = self.server._get_mob_health("mob_meta")
         
@@ -449,12 +449,23 @@ class TestMetabolism(unittest.IsolatedAsyncioTestCase):
         await self.server._process_metabolism()
         
         h2 = self.server._get_mob_health("mob_meta")
-        self.assertGreater(h2["hunger"], h1["hunger"])
+        # Mob starts with fat=10.0, so hunger should NOT increase (bug 1.1 fix)
+        self.assertEqual(h2["hunger"], h1["hunger"])
         self.assertGreater(h2["age"], h1["age"])
         self.assertLess(h2["fat"], h1["fat"])
-        # Energy should increase if was low (starting is 50, but let's check it changed)
-        # Actually starting energy is 50.0 in _get_default_mob_health
+        # Energy should change (fat burned → energy gained, minus aging drain)
         self.assertNotEqual(h2["energy"], h1["energy"])
+
+    async def test_metabolism_hunger_increases_without_fat(self):
+        """Hunger should increase when fat == 0 (regression prevention 3.1)."""
+        self.server._ensure_client_mob("meta_nofat")
+        cursor = self.server.db_conn.cursor()
+        cursor.execute("UPDATE mob_health SET fat = 0 WHERE mob_id = 'mob_meta_nofat'")
+        self.server.db_conn.commit()
+        h1 = self.server._get_mob_health("mob_meta_nofat")
+        await self.server._process_metabolism()
+        h2 = self.server._get_mob_health("mob_meta_nofat")
+        self.assertGreater(h2["hunger"], h1["hunger"])
 
     async def test_starvation_damage(self):
         """Mob should take health damage when energy and fat are zero."""
@@ -477,7 +488,7 @@ class TestMetabolism(unittest.IsolatedAsyncioTestCase):
         await self.server._handle_look({"mobId": "mob_looker"}, mock_ws)
         
         h2 = self.server._get_mob_health("mob_looker")
-        self.assertEqual(h2["energy"], h1["energy"] - 1.0)
+        self.assertEqual(h2["energy"], h1["energy"] - 0.5)
 
     async def test_move_deducts_energy(self):
         """MOVE_MOB action should cost energy based on distance and mass."""
@@ -492,8 +503,8 @@ class TestMetabolism(unittest.IsolatedAsyncioTestCase):
         h2 = self.server._get_mob_health("mob_mover")
         self.assertLess(h2["energy"], h1["energy"])
 
-    async def test_insufficient_energy_fails_action(self):
-        """Actions should fail if energy is too low."""
+    async def test_low_energy_scales_action(self):
+        """Actions should not fail if energy is too low, but just be less effective."""
         self.server._ensure_client_mob("tired")
         cursor = self.server.db_conn.cursor()
         cursor.execute("UPDATE mob_health SET energy = 0.5 WHERE mob_id = 'mob_tired'")
@@ -501,10 +512,9 @@ class TestMetabolism(unittest.IsolatedAsyncioTestCase):
         
         mock_ws = AsyncMock()
         with unittest.mock.patch.object(self.server, "send_error", new_callable=AsyncMock) as mock_err:
-            # LOOK costs 1.0
+            # LOOK costs 1.0 but won't fail anymore
             await self.server._handle_look({"mobId": "mob_tired"}, mock_ws)
-            mock_err.assert_awaited_once()
-            self.assertIn("INSUFFICIENT_ENERGY", mock_err.call_args[0][1])
+            mock_err.assert_not_awaited()
 
 # -----------------------------------------------------------------------
 # Phase 4.4 — Brain Functions Request
@@ -568,7 +578,7 @@ class TestCombatAndCarnivory(unittest.IsolatedAsyncioTestCase):
         h_att2 = self.server._get_mob_health("mob_attacker")
         
         self.assertLess(h_vic2["health"], h_vic1["health"])
-        self.assertEqual(h_att2["energy"], h_att1["energy"] - 5.0)
+        self.assertEqual(h_att2["energy"], h_att1["energy"] - 2.5)
 
     async def test_eat_mob_increases_fat_and_removes_carcass(self):
         """Predator eating dead mob gains fat and carcass is deleted."""
@@ -625,13 +635,14 @@ class TestAgingAndBreeding(unittest.IsolatedAsyncioTestCase):
         # Manipulate age to just before transition (INFANT_LIMIT is 50)
         cursor = self.server.db_conn.cursor()
         cursor.execute("UPDATE mob_health SET age = 49, life_stage = 'infant' WHERE mob_id = 'mob_aging_test'")
+        cursor.execute("UPDATE mob_physical SET aging_rate = 1.0 WHERE mob_id = 'mob_aging_test'")
         self.server.db_conn.commit()
         
         await self.server._process_metabolism()
         
         h = self.server._get_mob_health("mob_aging_test")
         self.assertEqual(h["life_stage"], "adult")
-        self.assertEqual(h["age"], 50)
+        self.assertAlmostEqual(h["age"], 50.0, places=2)
 
     async def test_infant_growth(self):
         """Infants should grow in size each tick."""
@@ -652,8 +663,10 @@ class TestAgingAndBreeding(unittest.IsolatedAsyncioTestCase):
         self.server._ensure_client_mob("mom", mob_type="prey")
         
         cursor = self.server.db_conn.cursor()
-        # Ensure adults and enough energy
+        # Ensure adults with enough energy and place them at the same position
         cursor.execute("UPDATE mob_health SET life_stage = 'adult', energy = 100 WHERE mob_id IN ('mob_dad', 'mob_mom')")
+        cursor.execute("UPDATE mobs SET position = ? WHERE mob_id IN ('mob_dad', 'mob_mom')",
+                       (json.dumps({"x": 0, "y": 0}),))
         self.server.db_conn.commit()
         
         mock_ws = AsyncMock()
@@ -674,7 +687,7 @@ class TestAgingAndBreeding(unittest.IsolatedAsyncioTestCase):
         self.server._ensure_client_mob("tired_dad")
         self.server._ensure_client_mob("tired_mom")
         cursor = self.server.db_conn.cursor()
-        cursor.execute("UPDATE mob_health SET life_stage = 'adult', energy = 10 WHERE mob_id IN ('mob_tired_dad', 'mob_tired_mom')")
+        cursor.execute("UPDATE mob_health SET life_stage = 'adult', energy = 0, fat = 0 WHERE mob_id IN ('mob_tired_dad', 'mob_tired_mom')")
         self.server.db_conn.commit()
         
         mock_ws = AsyncMock()

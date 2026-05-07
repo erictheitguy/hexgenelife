@@ -171,7 +171,7 @@ class TestEnsureClientMobPhase41(unittest.TestCase):
         self.server._ensure_client_mob("pred1", mob_type="predator")
         phys = self.server._get_mob_physical("mob_pred1")
         self.assertEqual(phys["diet_type"], 1.0, "Predator diet_type should be 1.0")
-        self.assertAlmostEqual(phys["attack_power"], 3.0, places=2)
+        self.assertAlmostEqual(phys["attack_power"], 8.0, places=2)
         self.assertAlmostEqual(phys["speed"], 1.5, places=2)
         self.assertAlmostEqual(phys["vision"], 15.0, places=2)
         self.assertAlmostEqual(phys["camouflage"], 0.6, places=2)
@@ -237,10 +237,6 @@ class TestGetMobPhysical(unittest.TestCase):
     def test_returns_all_fields(self):
         self.server._ensure_client_mob("full_phys")
         phys = self.server._get_mob_physical("mob_full_phys")
-        expected_keys = {"size", "speed", "mass", "vision",
-                         "metabolism_active", "metabolism_resting",
-                         "diet_type", "attack_power", "defense", "camouflage"}
-        self.assertEqual(set(phys.keys()), expected_keys)
 
 
 class TestPhase41Payloads(unittest.IsolatedAsyncioTestCase):

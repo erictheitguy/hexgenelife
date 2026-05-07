@@ -15,7 +15,10 @@ import math
 import random
 import logging
 
-logging.basicConfig(level=logging.INFO)
+# Configure logging
+logger = logging.getLogger("BrainRegistry")
+
+ATTACK_RANGE = 3.0
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -59,8 +62,9 @@ def evaluate_state(matrix, memory, outputs, mob_state):
 
     state_matrix = [hunger, fat, energy, health]
 
-    # If hunger is high or fat/energy is low → first output (hunger check)
-    if hunger > 5 or fat < 5 or energy < 10:
+    # Route to hunger evaluation if any nutritional state is below safe levels.
+    # energy < 50 catches mobs that haven't eaten yet (start at 50, drop fast from LOOKs).
+    if hunger > 5 or fat < 5 or energy < 50:
         next_node = outputs[0] if outputs else None
     else:
         next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
@@ -79,13 +83,24 @@ def evaluate_hunger(matrix, memory, outputs, mob_state):
     hunger = matrix[0] if len(matrix) > 0 else 0
     fat = matrix[1] if len(matrix) > 1 else 0
 
-    # Check if there's food nearby from LOOK data in memory
     look_data = memory.get("last_look", {})
     tiles = look_data.get("tiles", [])
-    has_grass_nearby = any(t.get("grass", 0) > 0 for t in tiles)
+    current_tile = min(tiles, key=lambda t: t.get("distance", 999), default=None)
+    if current_tile and current_tile.get("distance", 999) > 5.0:
+        current_tile = None
+    
+    physical = mob_state.get("physical", {})
+    graze_threshold = physical.get("graze_threshold", 5.0)
 
-    if (hunger > 3 or fat < 8) and has_grass_nearby:
-        next_node = outputs[0] if outputs else None
+    if hunger > 3 or fat < 8:
+        # Force move if grass is functionally depleted (< 0.5) or below graze threshold
+        tile_grass = current_tile.get("grass", 0) if current_tile else 0
+        if not current_tile or tile_grass < min(graze_threshold, 0.5):
+            # Grass is low or no tile found, move to find better grass
+            next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
+        else:
+            # Grass is sufficient, try to eat
+            next_node = outputs[0] if outputs else None
     else:
         next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
 
@@ -131,6 +146,9 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
     """
     look_data = memory.get("last_look", {})
     current_pos = mob_state.get("position", {"x": 0, "y": 0})
+    if isinstance(current_pos, str):
+        import json
+        current_pos = json.loads(current_pos)
     cx, cy = current_pos.get("x", 0), current_pos.get("y", 0)
 
     # If we have a threat, move away from it
@@ -147,22 +165,83 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
             "targetLocation": {"x": move_x, "y": move_y}
         }}
 
+    physical = mob_state.get("physical", {})
+    graze_threshold = physical.get("graze_threshold", 5.0)
+    wander_dist = physical.get("wander_dist", 3.0)
+    persistence = physical.get("persistence", 5.0)
+
+    # Initialize or retrieve graze direction
+    graze_dir_x = memory.get("graze_dir_x")
+    graze_dir_y = memory.get("graze_dir_y")
+    if graze_dir_x is None or graze_dir_y is None:
+        angle = random.uniform(0, 2 * math.pi)
+        graze_dir_x = math.cos(angle)
+        graze_dir_y = math.sin(angle)
+        memory["graze_dir_x"] = graze_dir_x
+        memory["graze_dir_y"] = graze_dir_y
+
     # If hungry, move toward grass
     hunger = matrix[0] if len(matrix) > 0 else 0
     tiles = look_data.get("tiles", [])
-    grass_tiles = [t for t in tiles if t.get("grass", 0) > 0 and t.get("distance", 0) > 0]
+    grass_tiles = [t for t in tiles if t.get("grass", 0) >= graze_threshold and t.get("distance", 0) > 0]
 
-    if hunger > 3 and grass_tiles:
-        closest_grass = min(grass_tiles, key=lambda t: t.get("distance", 999))
-        move_x = int(closest_grass["centerX"])
-        move_y = int(closest_grass["centerY"])
+    if (hunger > 3 or hunger > 15) and grass_tiles:
+        # Prefer tiles roughly in the graze_direction to avoid turning back
+        def tile_score(t):
+            dx = t["centerX"] - cx
+            dy = t["centerY"] - cy
+            dist = t.get("distance", 999)
+            if dist > 0:
+                dx /= dist
+                dy /= dist
+            dot = dx * graze_dir_x + dy * graze_dir_y
+            # higher dot is better, closer is better.
+            return dist - dot * 10.0
+            
+        best_grass = min(grass_tiles, key=tile_score)
+        move_x = int(best_grass["centerX"])
+        move_y = int(best_grass["centerY"])
+        
+        # Update graze dir to point toward food
+        dx = move_x - cx
+        dy = move_y - cy
+        dist = math.sqrt(dx*dx + dy*dy)
+        if dist > 0:
+            memory["graze_dir_x"] = dx / dist
+            memory["graze_dir_y"] = dy / dist
+        
+        # Reset wander steps when food is found
+        memory["wander_steps"] = 0
+            
         return {"action": "MOVE_MOB", "payload": {
             "targetLocation": {"x": move_x, "y": move_y}
         }}
 
-    # Otherwise wander randomly
-    move_x = cx + random.randint(-3, 3)
-    move_y = cy + random.randint(-3, 3)
+    # If starving (> 15) and no grass seen, move further to explore
+    wander_range = wander_dist
+    if hunger > 15:
+        wander_range = max(10.0, wander_dist * 2.0)
+        logger.debug(f"Mob {mob_state.get('mob_id')} is STARVING (hunger={hunger:.1f}). Increasing wander range to {wander_range}.")
+
+    # Wander intentionally with persistence
+    wander_steps = memory.get("wander_steps", 0)
+    
+    if wander_steps <= 0:
+        # Time to adjust course
+        angle = math.atan2(graze_dir_y, graze_dir_x)
+        # Reduced wobble for more intentional movement
+        angle += random.uniform(-0.2, 0.2) 
+        memory["graze_dir_x"] = math.cos(angle)
+        memory["graze_dir_y"] = math.sin(angle)
+        # Reset persistence counter
+        memory["wander_steps"] = int(persistence)
+    else:
+        # Keep same heading
+        memory["wander_steps"] = wander_steps - 1
+        angle = math.atan2(graze_dir_y, graze_dir_x)
+    
+    move_x = cx + math.cos(angle) * wander_range
+    move_y = cy + math.sin(angle) * wander_range
     return {"action": "MOVE_MOB", "payload": {
         "targetLocation": {"x": int(move_x), "y": int(move_y)}
     }}
@@ -170,7 +249,26 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
 
 @register("action_eat")
 def action_eat(matrix, memory, outputs, mob_state):
-    """Emit EAT_GRASS command."""
+    """Emit EAT_GRASS if standing on a grass tile, otherwise move to the nearest grass tile center."""
+    look_data = memory.get("last_look", {})
+    tiles = look_data.get("tiles", [])
+    grass_tiles = [t for t in tiles if t.get("grass", 0) > 0]
+
+    if not grass_tiles:
+        return {"action": "EAT_GRASS", "payload": {}}
+
+    nearest = min(grass_tiles, key=lambda t: t.get("distance", 999))
+
+    # Hex circumradius (center to vertex) = HEX_RADIUS = 5.0.
+    # The server uses point_in_polygon to determine if the mob is on a tile,
+    # so any mob within the circumradius is guaranteed to be inside the hex.
+    # Using the inradius (4.33) was too strict — mobs near tile edges but still
+    # inside the polygon would be sent to move instead of eating.
+    if nearest.get("distance", 999) > 5.0:
+        return {"action": "MOVE_MOB", "payload": {
+            "targetLocation": {"x": nearest["centerX"], "y": nearest["centerY"]}
+        }}
+
     return {"action": "EAT_GRASS", "payload": {}}
 
 
@@ -200,14 +298,16 @@ def evaluate_attack_target(matrix, memory, outputs, mob_state):
     targets = [m for m in visible_mobs
                if m.get("mob_type") == "prey"
                and m.get("alive", True)
-               and m.get("distance", 999) < mob_state.get("vision", 10) * 0.5]
+               and m.get("distance", 999) < mob_state.get("vision", 15)]
 
     if targets:
         closest = min(targets, key=lambda m: m.get("distance", 999))
         memory["attack_target"] = closest
+        memory["target_in_range"] = closest.get("distance", 999) <= ATTACK_RANGE
         next_node = outputs[0] if outputs else None
     else:
         memory.pop("attack_target", None)
+        memory.pop("target_in_range", None)
         next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
 
     return {"matrix": matrix, "next": next_node}
@@ -221,12 +321,155 @@ def action_attack(matrix, memory, outputs, mob_state):
         # No target, just wander
         return evaluate_movement(matrix, memory, outputs, mob_state)
 
+    # If NOT in range, move toward the target instead of attacking
+    if not memory.get("target_in_range"):
+        tx, ty = target["position"]["x"], target["position"]["y"]
+        logger.debug(f"Target {target['mobId']} out of range. Moving toward ({tx}, {ty})")
+        return {"action": "MOVE_MOB", "payload": {
+            "targetLocation": {"x": int(tx), "y": int(ty)}
+        }}
+
     return {"action": "ATTACK_MOB", "payload": {
         "targetId": target["mobId"],
     }}
+
+
+@register("evaluate_eat_carcass")
+def evaluate_eat_carcass(matrix, memory, outputs, mob_state):
+    """Predator: check for dead prey nearby and eat if found.
+
+    Routes to first output (action_eat_mob) if a dead prey is within ATTACK_RANGE.
+    Routes to second output (evaluate_hunt) otherwise.
+    """
+    look_data = memory.get("last_look", {})
+    visible_mobs = look_data.get("mobs", [])
+
+    dead_prey = [m for m in visible_mobs
+                 if m.get("mob_type") == "prey"
+                 and not m.get("alive", True)
+                 and m.get("distance", 999) <= ATTACK_RANGE]
+
+    if dead_prey:
+        closest = min(dead_prey, key=lambda m: m.get("distance", 999))
+        memory["eat_target"] = closest
+        next_node = outputs[0] if outputs else None
+    else:
+        memory.pop("eat_target", None)
+        next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
+
+    return {"matrix": matrix, "next": next_node}
+
+
+@register("action_eat_mob")
+def action_eat_mob(matrix, memory, outputs, mob_state):
+    """Emit EAT_MOB targeting the dead prey stored in memory by evaluate_eat_carcass."""
+    target = memory.get("eat_target")
+    if not target:
+        return evaluate_movement(matrix, memory, outputs, mob_state)
+
+    if target.get("distance", 999) > ATTACK_RANGE:
+        tx, ty = target["position"]["x"], target["position"]["y"]
+        return {"action": "MOVE_MOB", "payload": {
+            "targetLocation": {"x": int(tx), "y": int(ty)}
+        }}
+
+    memory.pop("eat_target", None)
+    return {"action": "EAT_MOB", "payload": {"targetId": target["mobId"]}}
 
 
 @register("evaluate_flee")
 def evaluate_flee(matrix, memory, outputs, mob_state):
     """Move away from the nearest threat (stored in memory by evaluate_danger)."""
     return evaluate_movement(matrix, memory, outputs, mob_state)
+
+
+@register("evaluate_breed_energy")
+def evaluate_breed_energy(matrix, memory, outputs, mob_state):
+    """Gate breeding path — check energy and life stage.
+
+    Routes to first output (find_partner) if energy >= 70 and life_stage == "adult".
+    Routes to second output (evaluate_danger_check) otherwise.
+    Passes matrix through unchanged.
+    """
+    energy = mob_state.get("energy", 0)
+    fat = mob_state.get("fat", 0)
+    health = mob_state.get("health", 100)
+    hunger = mob_state.get("hunger", 0)
+    life_stage = mob_state.get("life_stage", "")
+    
+    last_hunger = memory.get("last_hunger", 0)
+    hunger_increasing = hunger > last_hunger
+    memory["last_hunger"] = hunger
+
+    if health < 90 or hunger_increasing:
+        next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
+        return {"matrix": matrix, "next": next_node}
+
+    if (energy > 0 or fat > 0) and life_stage == "adult":
+        next_node = outputs[0] if outputs else None
+    else:
+        next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
+
+    return {"matrix": matrix, "next": next_node}
+
+
+@register("find_partner")
+def find_partner(matrix, memory, outputs, mob_state):
+    """Scan LOOK data for the closest visible, alive, same-type mob.
+
+    Routes to first output (action_breed) if a partner is found and stores
+    it in memory["breed_target"].  Routes to second output (evaluate_movement)
+    if no suitable partner exists or the caller is not an adult.
+    Passes matrix through unchanged.
+    """
+    # 2.2 — short-circuit if not adult
+    if mob_state.get("life_stage", "") != "adult":
+        memory.pop("breed_target", None)
+        next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
+        return {"matrix": matrix, "next": next_node}
+
+    # 2.3 — read LOOK data, handle missing keys gracefully
+    last_look = memory.get("last_look", {})
+    mobs = last_look.get("mobs", []) if isinstance(last_look, dict) else []
+
+    # 2.4 — filter candidates
+    my_type = mob_state.get("mob_type", "")
+    vision = mob_state.get("vision", 10.0)
+    candidates = [
+        m for m in mobs
+        if m.get("mob_type") == my_type
+        and m.get("alive") is True
+        and m.get("distance", float("inf")) <= vision
+    ]
+
+    # 2.5 — no candidates
+    if not candidates:
+        memory.pop("breed_target", None)
+        next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
+        return {"matrix": matrix, "next": next_node}
+
+    # 2.6 — store closest candidate, route to first output
+    closest = min(candidates, key=lambda m: m.get("distance", float("inf")))
+    memory["breed_target"] = closest
+    next_node = outputs[0] if outputs else None
+    return {"matrix": matrix, "next": next_node}
+
+
+@register("action_breed")
+def action_breed(matrix, memory, outputs, mob_state):
+    """Emit BREED_MOB if partner is within ATTACK_RANGE, else move toward partner.
+
+    Falls back to evaluate_movement if no breed_target is stored in memory.
+    Clears memory["breed_target"] after emitting BREED_MOB.
+    """
+    target = memory.get("breed_target")
+
+    # No target — fall back to movement logic
+    if target is None:
+        return evaluate_movement(matrix, memory, outputs, mob_state)
+
+    if target["distance"] <= ATTACK_RANGE:
+        memory.pop("breed_target", None)
+        return {"action": "BREED", "payload": {"targetId": target["mobId"]}}
+    else:
+        return {"action": "MOVE_MOB", "payload": {"targetLocation": target["position"]}}

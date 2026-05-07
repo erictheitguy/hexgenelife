@@ -32,6 +32,19 @@ def main():
     # Selection state
     selected_mob_id = None
     selected_tile_id = None
+    selected_mob_lineage = None  # persists across polls
+    
+    # Tick counter (reads from DB)
+    tick_counter = 0
+    
+    # Brain view state
+    show_brain_for_mob_id = None
+    brain_info = None
+    brain_functions = None
+    brain_scroll_y = 0
+
+    # Lineage view state
+    show_lineage_for_mob_id = None
 
     def point_in_polygon(x, y, polygon):
         n = len(polygon)
@@ -61,6 +74,7 @@ def main():
         if current_time - last_poll_time >= POLL_INTERVAL_MS:
             try:
                 world_state = db_reader.get_world_state()
+                tick_counter = db_reader.get_server_tick()
             except Exception as e:
                 print(f"Error reading DB: {e}")
             last_poll_time = current_time
@@ -76,20 +90,49 @@ def main():
                 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
+                    mx, my = event.pos
+                    
+                    # 1. Close brain window if clicking outside it
+                    if show_brain_for_mob_id:
+                        if renderer.brain_window_rect and not renderer.brain_window_rect.collidepoint(mx, my):
+                            show_brain_for_mob_id = None
+                            brain_scroll_y = 0
+                            continue
+
+                    # 1b. Close lineage window if clicking outside it
+                    if show_lineage_for_mob_id:
+                        if renderer.lineage_window_rect and not renderer.lineage_window_rect.collidepoint(mx, my):
+                            show_lineage_for_mob_id = None
+                            continue
+                            
+                    # 2. Open brain window if clicking the button
+                    if selected_mob_id and renderer.brain_btn_rect and renderer.brain_btn_rect.collidepoint(mx, my):
+                        show_brain_for_mob_id = selected_mob_id
+                        brain_info = db_reader.get_mob_brain(selected_mob_id)
+                        brain_functions = db_reader.get_brain_functions()
+                        brain_scroll_y = 0
+                        continue
+
+                    # 2b. Open lineage window if clicking the lineage button
+                    if selected_mob_id and renderer.lineage_btn_rect and renderer.lineage_btn_rect.collidepoint(mx, my):
+                        show_lineage_for_mob_id = selected_mob_id
+                        continue
+                        
                     is_dragging = True
                     # Selection check
-                    mx, my = event.pos
                     wx, wy = camera.screen_to_world(mx, my)
                     
                     found_selection = False
                     # Check for mobs first (higher priority)
                     for mob in world_state.get("mobs", []):
+                        mob_size = mob.get("size", 1.0)
+                        hit_radius = max(1.0, mob_size * 2.0)
                         dist = ((mob["x"] - wx)**2 + (mob["y"] - wy)**2)**0.5
-                        # Radius is approx 4 in world units, allow 6 for hit area
-                        if dist < 6:
+                        if dist < hit_radius:
                             selected_mob_id = mob["id"]
                             selected_tile_id = None
                             found_selection = True
+                            selected_mob_lineage = db_reader.get_mob_lineage(mob["id"])
                             break
                     
                     if not found_selection:
@@ -98,12 +141,14 @@ def main():
                             if point_in_polygon(wx, wy, tile["polygon"]):
                                 selected_tile_id = tile["id"]
                                 selected_mob_id = None
+                                selected_mob_lineage = None
                                 found_selection = True
                                 break
                     
                     if not found_selection:
                         selected_mob_id = None
                         selected_tile_id = None
+                        selected_mob_lineage = None
 
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1:
@@ -115,10 +160,13 @@ def main():
                     
             elif event.type == pygame.MOUSEWHEEL:
                 mx, my = pygame.mouse.get_pos()
-                if event.y > 0:
-                    camera.apply_zoom(camera.zoom * 0.1, mx, my)
-                elif event.y < 0:
-                    camera.apply_zoom(-camera.zoom * 0.1, mx, my)
+                if show_brain_for_mob_id and renderer.brain_window_rect and renderer.brain_window_rect.collidepoint(mx, my):
+                    brain_scroll_y = max(0, brain_scroll_y - event.y * 3)
+                else:
+                    if event.y > 0:
+                        camera.apply_zoom(camera.zoom * 0.1, mx, my)
+                    elif event.y < 0:
+                        camera.apply_zoom(-camera.zoom * 0.1, mx, my)
                     
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_r:
@@ -126,7 +174,7 @@ def main():
                     
         # 3. Render
         renderer.render_world(camera, world_state, selected_mob_id, selected_tile_id)
-        renderer.render_hud()
+        renderer.render_hud(tick_counter)
         
         # 4. Selection Info HUD
         selected_obj = None
@@ -135,6 +183,7 @@ def main():
             for mob in world_state.get("mobs", []):
                 if mob["id"] == selected_mob_id:
                     selected_obj = mob
+                    selected_obj["lineage"] = selected_mob_lineage
                     obj_type = "mob"
                     break
         elif selected_tile_id:
@@ -146,6 +195,19 @@ def main():
         
         if selected_obj:
             renderer.render_selection_info(selected_obj, obj_type)
+            
+        # 5. Brain Window Overlay
+        if show_brain_for_mob_id and show_brain_for_mob_id == selected_mob_id:
+            renderer.render_brain_window(brain_info, brain_functions, brain_scroll_y)
+        elif show_brain_for_mob_id:
+            show_brain_for_mob_id = None
+            brain_scroll_y = 0
+
+        # 6. Lineage Window Overlay
+        if show_lineage_for_mob_id and show_lineage_for_mob_id == selected_mob_id:
+            renderer.render_lineage_window(selected_mob_lineage, show_lineage_for_mob_id)
+        elif show_lineage_for_mob_id:
+            show_lineage_for_mob_id = None
         
         pygame.display.flip()
         clock.tick(60)
