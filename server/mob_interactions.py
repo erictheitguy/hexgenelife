@@ -180,6 +180,7 @@ class MobInteractions:
 
         # mob_self
         health = self.mob_manager.get_mob_health(mob_id)
+        phys = self.mob_manager.get_mob_physical(mob_id)
         mob_self = {
             "mobId": mob_id,
             "position": pos,
@@ -187,6 +188,7 @@ class MobInteractions:
             "fat": health.get("fat", 0.0),
             "energy": health.get("energy", 50.0),
             "health": health.get("health", 100.0),
+            "herd": phys.get("herd", 0.5),
         }
 
         import websockets
@@ -535,13 +537,14 @@ class MobInteractions:
             elif life_stage == "adult" and new_age >= max_age * 0.75:
                 life_stage = "senior"
 
-            # Fat burns to energy at 1:1 (spec 2.2); fat suppresses hunger (spec 2.1)
+            # Fat burns to energy at 1:1 (spec 2.2); fat suppresses and reduces hunger (spec 2.1)
             new_fat = fat
             if new_fat > 0:
                 burn = min(new_fat, metabolism_resting)
                 new_fat = max(0.0, new_fat - burn)
                 new_energy = min(100.0, new_energy + burn)  # 1:1 conversion
-                new_hunger = hunger  # fat suppresses hunger increment (spec 2.1)
+                # Fat satisfies hunger — decrease it while reserves exist
+                new_hunger = max(0.0, hunger - burn)
             else:
                 new_hunger = min(50.0, hunger + HUNGER_PER_TICK)
 

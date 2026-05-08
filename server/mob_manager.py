@@ -73,7 +73,7 @@ class MobManager:
                (mob_id, hunger, fat, health, age, energy, life_stage, birth_tick, max_age)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (mob_id, 0.0, 0.0, 100.0, 0.0,
-             h["energy"], h["life_stage"], h["birth_tick"], h["max_age"]),
+             h["energy"], "baby", h["birth_tick"], h["max_age"]),
         )
 
         # mob_physical
@@ -87,13 +87,14 @@ class MobManager:
             """INSERT OR IGNORE INTO mob_physical
                (mob_id, size, speed, mass, vision, metabolism_active, metabolism_resting,
                 diet_type, attack_power, defense, camouflage,
-                graze_threshold, wander_dist, persistence, aging_rate)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                graze_threshold, wander_dist, persistence, aging_rate, herd)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (mob_id,
              phys["size"], phys["speed"], phys["mass"], phys["vision"],
              phys["metabolism_active"], phys["metabolism_resting"],
              phys["diet_type"], phys["attack_power"], phys["defense"], phys["camouflage"],
-             phys["graze_threshold"], phys["wander_dist"], phys["persistence"], phys["aging_rate"]),
+             phys["graze_threshold"], phys["wander_dist"], phys["persistence"],
+             phys["aging_rate"], phys.get("herd", 0.5)),
         )
 
         # mob_brain

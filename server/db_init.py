@@ -118,7 +118,8 @@ class DatabaseInitializer:
             ("graze_threshold", "REAL", "5.0"),
             ("wander_dist", "REAL", "3.0"),
             ("persistence", "REAL", "5.0"),
-            ("aging_rate", "REAL", "0.05")
+            ("aging_rate", "REAL", "0.05"),
+            ("herd", "REAL", "0.5"),
         ]:
             try:
                 cursor.execute(f"ALTER TABLE mob_physical ADD COLUMN {col} {col_type} DEFAULT {default_val}")

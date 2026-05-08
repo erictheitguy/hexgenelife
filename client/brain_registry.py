@@ -142,7 +142,9 @@ def evaluate_danger(matrix, memory, outputs, mob_state):
 def evaluate_movement(matrix, memory, outputs, mob_state):
     """Decide where to move — toward food, away from danger, or wander.
 
-    Emits a MOVE_MOB action.
+    Wander vector is a blend of:
+      - grass vector: toward the highest-grass visible tile
+      - herd vector: toward centroid of visible same-type mobs (scaled by herd metric)
     """
     look_data = memory.get("last_look", {})
     current_pos = mob_state.get("position", {"x": 0, "y": 0})
@@ -157,7 +159,6 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
         tx, ty = threat["position"]["x"], threat["position"]["y"]
         dx, dy = cx - tx, cy - ty
         dist = math.sqrt(dx * dx + dy * dy) or 1
-        # Normalize and move away
         move_x = int(cx + (dx / dist) * 3)
         move_y = int(cy + (dy / dist) * 3)
         memory.pop("threat", None)
@@ -166,84 +167,69 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
         }}
 
     physical = mob_state.get("physical", {})
-    graze_threshold = physical.get("graze_threshold", 5.0)
     wander_dist = physical.get("wander_dist", 3.0)
     persistence = physical.get("persistence", 5.0)
+    hunger = mob_state.get("hunger", matrix[0] if matrix else 0)
+    # Suppress herd instinct when starving — survival overrides social behavior
+    herd = 0.0 if hunger >= 30 else mob_state.get("herd", physical.get("herd", 0.5))
+    # Move faster when starving
+    if hunger >= 30:
+        wander_dist = max(wander_dist, physical.get("speed", 1.0) * 5.0)
+    mob_type = mob_state.get("mob_type", "prey")
 
-    # Initialize or retrieve graze direction
-    graze_dir_x = memory.get("graze_dir_x")
-    graze_dir_y = memory.get("graze_dir_y")
-    if graze_dir_x is None or graze_dir_y is None:
-        angle = random.uniform(0, 2 * math.pi)
-        graze_dir_x = math.cos(angle)
-        graze_dir_y = math.sin(angle)
-        memory["graze_dir_x"] = graze_dir_x
-        memory["graze_dir_y"] = graze_dir_y
-
-    # If hungry, move toward grass
-    hunger = matrix[0] if len(matrix) > 0 else 0
     tiles = look_data.get("tiles", [])
-    grass_tiles = [t for t in tiles if t.get("grass", 0) >= graze_threshold and t.get("distance", 0) > 0]
+    visible_mobs = look_data.get("mobs", [])
 
-    if (hunger > 3 or hunger > 15) and grass_tiles:
-        # Prefer tiles roughly in the graze_direction to avoid turning back
-        def tile_score(t):
-            dx = t["centerX"] - cx
-            dy = t["centerY"] - cy
-            dist = t.get("distance", 999)
-            if dist > 0:
-                dx /= dist
-                dy /= dist
-            dot = dx * graze_dir_x + dy * graze_dir_y
-            # higher dot is better, closer is better.
-            return dist - dot * 10.0
-            
-        best_grass = min(grass_tiles, key=tile_score)
-        move_x = int(best_grass["centerX"])
-        move_y = int(best_grass["centerY"])
-        
-        # Update graze dir to point toward food
-        dx = move_x - cx
-        dy = move_y - cy
-        dist = math.sqrt(dx*dx + dy*dy)
-        if dist > 0:
-            memory["graze_dir_x"] = dx / dist
-            memory["graze_dir_y"] = dy / dist
-        
-        # Reset wander steps when food is found
-        memory["wander_steps"] = 0
-            
-        return {"action": "MOVE_MOB", "payload": {
-            "targetLocation": {"x": move_x, "y": move_y}
-        }}
+    # --- Grass vector: toward highest-grass tile ---
+    gvx, gvy = 0.0, 0.0
+    if tiles:
+        best = max(tiles, key=lambda t: t.get("grass", 0))
+        if best.get("grass", 0) > 0:
+            dx, dy = best["centerX"] - cx, best["centerY"] - cy
+            d = math.sqrt(dx*dx + dy*dy) or 1
+            gvx, gvy = dx/d, dy/d
 
-    # If starving (> 15) and no grass seen, move further to explore
-    wander_range = wander_dist
-    if hunger > 15:
-        wander_range = max(10.0, wander_dist * 2.0)
-        logger.debug(f"Mob {mob_state.get('mob_id')} is STARVING (hunger={hunger:.1f}). Increasing wander range to {wander_range}.")
+    # --- Herd vector: toward centroid of visible same-type mobs ---
+    hvx, hvy = 0.0, 0.0
+    same_type = [m for m in visible_mobs if m.get("mob_type") == mob_type]
+    if same_type and herd > 0:
+        avg_x = sum(m["position"]["x"] for m in same_type) / len(same_type)
+        avg_y = sum(m["position"]["y"] for m in same_type) / len(same_type)
+        dx, dy = avg_x - cx, avg_y - cy
+        d = math.sqrt(dx*dx + dy*dy) or 1
+        hvx, hvy = dx/d, dy/d
 
-    # Wander intentionally with persistence
-    wander_steps = memory.get("wander_steps", 0)
-    
-    if wander_steps <= 0:
-        # Time to adjust course
-        angle = math.atan2(graze_dir_y, graze_dir_x)
-        # Reduced wobble for more intentional movement
-        angle += random.uniform(-0.2, 0.2) 
-        memory["graze_dir_x"] = math.cos(angle)
-        memory["graze_dir_y"] = math.sin(angle)
-        # Reset persistence counter
-        memory["wander_steps"] = int(persistence)
+    # --- Blend vectors: grass weighted by (1-herd), herd weighted by herd ---
+    # If no grass or no herd data, fall back to persistent wander direction
+    if gvx == 0 and gvy == 0 and hvx == 0 and hvy == 0:
+        # Pure wander with persistence
+        wander_steps = memory.get("wander_steps", 0)
+        graze_dir_x = memory.get("graze_dir_x")
+        graze_dir_y = memory.get("graze_dir_y")
+        if graze_dir_x is None or wander_steps <= 0:
+            angle = random.uniform(0, 2 * math.pi)
+            graze_dir_x = math.cos(angle)
+            graze_dir_y = math.sin(angle)
+            memory["graze_dir_x"] = graze_dir_x
+            memory["graze_dir_y"] = graze_dir_y
+            memory["wander_steps"] = int(persistence)
+        else:
+            memory["wander_steps"] = wander_steps - 1
+        bx, by = graze_dir_x, graze_dir_y
     else:
-        # Keep same heading
-        memory["wander_steps"] = wander_steps - 1
-        angle = math.atan2(graze_dir_y, graze_dir_x)
-    
-    move_x = cx + math.cos(angle) * wander_range
-    move_y = cy + math.sin(angle) * wander_range
+        bx = gvx * (1.0 - herd) + hvx * herd
+        by = gvy * (1.0 - herd) + hvy * herd
+        # Normalize blend
+        bd = math.sqrt(bx*bx + by*by) or 1
+        bx, by = bx/bd, by/bd
+        memory["graze_dir_x"] = bx
+        memory["graze_dir_y"] = by
+        memory["wander_steps"] = int(persistence)
+
+    move_x = int(cx + bx * wander_dist)
+    move_y = int(cy + by * wander_dist)
     return {"action": "MOVE_MOB", "payload": {
-        "targetLocation": {"x": int(move_x), "y": int(move_y)}
+        "targetLocation": {"x": move_x, "y": move_y}
     }}
 
 

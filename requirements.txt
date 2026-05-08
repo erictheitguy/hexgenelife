@@ -1,3 +1,4 @@
 pygame-ce>=2.5.0
-websockets>=16.0
-pytest>=9.0.0
+websockets>=14.0
+pytest>=8.0.0
+# tkinter (Standard library component - on Linux you may need: sudo apt-get install python3-tk)

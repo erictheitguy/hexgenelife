@@ -147,6 +147,7 @@ class HexGenLifeClient:
                         await asyncio.wait_for(look_evt.wait(), timeout=2.0)
                     except asyncio.TimeoutError:
                         logger.warning(f"[{self.client_id}] LOOK_RESULT timeout for {mob_id}")
+                        mob._awaiting_look = False  # proceed with stale look data
                 t_look_total += time.perf_counter() - t0
 
                 # Step 2: Brain thinks and produces an action
@@ -321,6 +322,9 @@ class ClientState:
             self._process_look_result(payload)
         elif message_type == "TICK_COMPLETE":
             pass  # handled in listen() via tick_event
+        elif message_type in ("MOB_MOVED", "GRASS_EATEN", "MOB_ATTACKED",
+                               "MOB_EATEN", "MOB_BRED"):
+            pass  # informational broadcasts — no client action needed
         else:
             logger.warning(f"Unknown message type received: {message_type}")
 

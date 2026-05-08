@@ -27,6 +27,7 @@ DEFAULT_MOB_PHYSICAL = {
     "wander_dist": 3.0,
     "persistence": 5.0,
     "aging_rate": 0.05,
+    "herd": 0.5,          # 0.0 = solitary, 1.0 = strong herd instinct
 }
 DEFAULT_MOB_HEALTH_EXT = {
     "energy": 50.0,

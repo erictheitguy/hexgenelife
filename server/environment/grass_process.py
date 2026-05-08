@@ -39,7 +39,7 @@ class GrassProcess(Process):
                         UPDATE hex_tiles
                         SET 
                             Grass = CASE 
-                                WHEN Water > 0 THEN Grass + MIN(Water, 1.0)
+                                WHEN Water > 0 THEN Grass + (MIN(Water, 1.0) * 5.0)
                                 ELSE MAX(0.0, Grass - 1.0)
                             END,
                             Water = MAX(0.0, Water - 1.0)
