@@ -79,7 +79,7 @@ class MobManager:
         # mob_physical
         phys = dict(DEFAULT_MOB_PHYSICAL)
         if mob_type == "predator":
-            phys.update({"diet_type": 1.0, "attack_power": 3.0, "speed": 1.5, "vision": 25.0})
+            phys.update({"diet_type": 1.0, "attack_power": 3.0, "speed": 1.5, "vision": 25.0, "aging_rate": 0.05})
         if physical_overrides:
             phys.update(physical_overrides)
 

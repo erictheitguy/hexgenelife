@@ -34,7 +34,7 @@ STARVATION_TIER2 = 40.0   # hunger > 40  → 3 damage
 # Aging cost per unit of age increase
 ENERGY_PER_AGE_UNIT = 1.0
 # Age increase per tick (default, overridden by mob_physical.aging_rate)
-DEFAULT_AGING_RATE = 0.05
+DEFAULT_AGING_RATE = 0.25
 # Breeding energy cost
 BREED_ENERGY_COST = 20.0
 # Minimum energy to breed
@@ -141,9 +141,11 @@ class MobInteractions:
                 "distance": math.sqrt((r["centerX"] - ox) ** 2 + (r["centerY"] - oy) ** 2),
             })
 
-        # Mobs within vision (excluding self)
+        # Mobs within vision (excluding self) — include recently dead so predators can eat carcasses
         cursor.execute(
-            "SELECT * FROM mobs WHERE mob_id != ? AND is_active = 1",
+            "SELECT m.*, g.death FROM mobs m "
+            "LEFT JOIN mob_genes g ON m.mob_id = g.mob_id "
+            "WHERE m.mob_id != ? AND m.is_active = 1",
             (mob_id,),
         )
         visible_mobs = []
@@ -163,21 +165,24 @@ class MobInteractions:
             if dist > vision:
                 continue
 
-            # Camouflage detection
-            t_phys = self.mob_manager.get_mob_physical(m["mob_id"])
-            camouflage = t_phys.get("camouflage", 0.5)
-            size = t_phys.get("size", 1.0)
-            last_move = self.mob_last_move_dist.get(m["mob_id"], 0.0)
-            detection = vision - camouflage * 10.0 + last_move * 0.5 + size * 2.0
-            if detection < dist:
-                continue
+            is_dead = bool(m.get("death"))
+
+            # Dead mobs don't use camouflage — always visible as carcasses
+            if not is_dead:
+                t_phys = self.mob_manager.get_mob_physical(m["mob_id"])
+                camouflage = t_phys.get("camouflage", 0.5)
+                size = t_phys.get("size", 1.0)
+                last_move = self.mob_last_move_dist.get(m["mob_id"], 0.0)
+                detection = vision - camouflage * 10.0 + last_move * 0.5 + size * 2.0
+                if detection < dist:
+                    continue
 
             visible_mobs.append({
                 "mobId": m["mob_id"],
                 "mob_type": m.get("mob_type", "prey"),
                 "position": m_pos,
                 "distance": dist,
-                "alive": True,
+                "alive": not is_dead,
             })
 
         # mob_self
@@ -345,10 +350,13 @@ class MobInteractions:
         # Check if target died
         health = self.mob_manager.get_mob_health(target_id)
         if health.get("health", 1.0) <= 0:
+            now = time.time()
             cursor.execute(
                 "UPDATE mob_genes SET death = ? WHERE mob_id = ?",
-                (time.time(), target_id),
+                (now, target_id),
             )
+            # Keep is_active=1 briefly so predators can see and eat the carcass;
+            # metabolism loop will set is_active=0 after it's been eaten or times out.
             self.db_conn.commit()
 
         self._record_interaction(mob_id, target_id, "ATTACK", "HIT",
@@ -583,4 +591,18 @@ class MobInteractions:
                 )
                 logger.info(f"Mob {mob_id} died (health={new_health}, age={new_age})")
 
+        self.db_conn.commit()
+
+        # Clean up stale carcasses (dead > 30s and not yet eaten)
+        stale_cutoff = time.time() - 30.0
+        cursor = self.db_conn.cursor()
+        cursor.execute(
+            "UPDATE mobs SET is_active = 0 "
+            "WHERE mob_id IN ("
+            "  SELECT m.mob_id FROM mobs m "
+            "  JOIN mob_genes g ON m.mob_id = g.mob_id "
+            "  WHERE g.death > 0 AND g.death < ? AND m.is_active = 1"
+            ")",
+            (stale_cutoff,),
+        )
         self.db_conn.commit()

@@ -26,7 +26,7 @@ DEFAULT_MOB_PHYSICAL = {
     "graze_threshold": 5.0,
     "wander_dist": 3.0,
     "persistence": 5.0,
-    "aging_rate": 0.05,
+    "aging_rate": 0.25,
     "herd": 0.5,          # 0.0 = solitary, 1.0 = strong herd instinct
 }
 DEFAULT_MOB_HEALTH_EXT = {
