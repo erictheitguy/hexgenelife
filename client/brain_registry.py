@@ -62,12 +62,8 @@ def evaluate_state(matrix, memory, outputs, mob_state):
 
     state_matrix = [hunger, fat, energy, health]
 
-    # Route to hunger evaluation if any nutritional state is below safe levels.
-    # energy < 50 catches mobs that haven't eaten yet (start at 50, drop fast from LOOKs).
-    if hunger > 5 or fat < 5 or energy < 50:
-        next_node = outputs[0] if outputs else None
-    else:
-        next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
+    # Always evaluate hunger first — evaluate_hunger will route to breeding if not hungry.
+    next_node = outputs[0] if outputs else None
 
     return {"matrix": state_matrix, "next": next_node}
 
@@ -92,7 +88,7 @@ def evaluate_hunger(matrix, memory, outputs, mob_state):
     physical = mob_state.get("physical", {})
     graze_threshold = physical.get("graze_threshold", 5.0)
 
-    if hunger > 3 or fat < 8:
+    if hunger > 3 and fat <= 0:
         # Force move if grass is functionally depleted (< 0.5) or below graze threshold
         tile_grass = current_tile.get("grass", 0) if current_tile else 0
         if not current_tile or tile_grass < min(graze_threshold, 0.5):
@@ -378,20 +374,10 @@ def evaluate_breed_energy(matrix, memory, outputs, mob_state):
     Passes matrix through unchanged.
     """
     energy = mob_state.get("energy", 0)
-    fat = mob_state.get("fat", 0)
-    health = mob_state.get("health", 100)
-    hunger = mob_state.get("hunger", 0)
     life_stage = mob_state.get("life_stage", "")
-    
-    last_hunger = memory.get("last_hunger", 0)
-    hunger_increasing = hunger > last_hunger
-    memory["last_hunger"] = hunger
 
-    if health < 90 or hunger_increasing:
-        next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
-        return {"matrix": matrix, "next": next_node}
-
-    if (energy > 0 or fat > 0) and life_stage == "adult":
+    # Require energy >= 70 (spec: safety margin above server MIN_BREED_ENERGY=40)
+    if energy >= 70 and life_stage == "adult":
         next_node = outputs[0] if outputs else None
     else:
         next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
@@ -456,6 +442,7 @@ def action_breed(matrix, memory, outputs, mob_state):
 
     if target["distance"] <= ATTACK_RANGE:
         memory.pop("breed_target", None)
-        return {"action": "BREED", "payload": {"targetId": target["mobId"]}}
+        return {"action": "BREED_MOB", "payload": {"targetId": target["mobId"]}}
     else:
-        return {"action": "MOVE_MOB", "payload": {"targetLocation": target["position"]}}
+        tp = target["position"]
+        return {"action": "MOVE_MOB", "payload": {"targetLocation": {"x": int(tp["x"]), "y": int(tp["y"])}}}

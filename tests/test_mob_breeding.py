@@ -449,7 +449,7 @@ class TestPBTEvaluateBreedEnergyHighEnergy(unittest.TestCase):
     """
 
     @given(
-        energy=st.floats(min_value=0.01, max_value=100.0, allow_nan=False, allow_infinity=False),
+        energy=st.floats(min_value=70.0, max_value=100.0, allow_nan=False, allow_infinity=False),
         matrix=st.lists(st.floats(allow_nan=False, allow_infinity=False), max_size=10),
     )
     @settings(max_examples=100)

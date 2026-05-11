@@ -147,7 +147,7 @@ PREDATOR_DECISION_TREE = {
     "nodes": {
         "evaluate_state": {
             "function": "evaluate_state",
-            "outputs": ["evaluate_hunger_pred", "evaluate_breed_energy"]
+            "outputs": ["evaluate_hunger_pred", "evaluate_eat_carcass"]
         },
         "evaluate_hunger_pred": {
             "function": "evaluate_hunger",
@@ -155,19 +155,19 @@ PREDATOR_DECISION_TREE = {
         },
         "evaluate_eat_carcass": {
             "function": "evaluate_eat_carcass",
-            "outputs": ["action_eat_mob", "evaluate_hunt"]
+            "outputs": ["action_eat_mob", "evaluate_breed_energy"]
         },
         "action_eat_mob": {
             "function": "action_eat_mob",
             "outputs": []
         },
-        "evaluate_hunt": {
-            "function": "evaluate_attack_target",
-            "outputs": ["action_attack", "evaluate_movement"]
-        },
         "evaluate_breed_energy": {
             "function": "evaluate_breed_energy",
             "outputs": ["find_partner", "evaluate_hunt"]
+        },
+        "evaluate_hunt": {
+            "function": "evaluate_attack_target",
+            "outputs": ["action_attack", "evaluate_movement"]
         },
         "find_partner": {
             "function": "find_partner",

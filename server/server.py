@@ -177,7 +177,7 @@ class GameServer:
                         await self.mob_interactions.handle_attack_mob(payload, ws)
                     elif cmd == "EAT_MOB":
                         await self.mob_interactions.handle_eat_mob(payload, ws)
-                    elif cmd == "BREED":
+                    elif cmd in ("BREED", "BREED_MOB"):
                         await self.mob_interactions.handle_breed(payload, ws)
                     elif cmd == "REQUEST_BRAIN_FUNCTIONS":
                         await self._handle_request_brain_functions(payload, ws)

@@ -26,6 +26,8 @@ ENERGY_FROM_MOB = 30.0
 HUNGER_PER_TICK = 1.0
 # Fat consumed per tick (resting metabolism) — kept for reference
 FAT_PER_TICK = 0.5
+# Energy threshold below which hunger increases when fat is depleted
+HUNGER_ENERGY_THRESHOLD = 60.0
 # Starvation thresholds
 STARVATION_TIER1 = 30.0   # hunger >= 30 → 2 damage
 STARVATION_TIER2 = 40.0   # hunger > 40  → 3 damage
@@ -188,6 +190,7 @@ class MobInteractions:
             "fat": health.get("fat", 0.0),
             "energy": health.get("energy", 50.0),
             "health": health.get("health", 100.0),
+            "life_stage": health.get("life_stage", "adult"),
             "herd": phys.get("herd", 0.5),
         }
 
@@ -545,8 +548,12 @@ class MobInteractions:
                 new_energy = min(100.0, new_energy + burn)  # 1:1 conversion
                 # Fat satisfies hunger — decrease it while reserves exist
                 new_hunger = max(0.0, hunger - burn)
-            else:
+            elif new_energy < HUNGER_ENERGY_THRESHOLD:
+                # No fat and energy is low — hunger increases
                 new_hunger = min(50.0, hunger + HUNGER_PER_TICK)
+            else:
+                # No fat but energy is sufficient — hunger holds steady
+                new_hunger = hunger
 
             # Starvation damage (spec 2.5: first tier at hunger >= 30)
             damage = 0.0
