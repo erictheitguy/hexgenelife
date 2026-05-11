@@ -14,6 +14,7 @@ class MessageValidator:
             "ATTACK_MOB": ["mobId", "targetId"],
             "EAT_MOB": ["mobId", "targetId"],
             "BREED": ["mobId", "targetId"],
+            "BREED_MOB": ["mobId", "targetId"],
             "REQUEST_BRAIN_FUNCTIONS": [],
         }
 
