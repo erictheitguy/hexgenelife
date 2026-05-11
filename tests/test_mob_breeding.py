@@ -449,7 +449,7 @@ class TestPBTEvaluateBreedEnergyHighEnergy(unittest.TestCase):
     """
 
     @given(
-        energy=st.floats(min_value=70.0, max_value=100.0, allow_nan=False, allow_infinity=False),
+        energy=st.floats(min_value=45.0, max_value=100.0, allow_nan=False, allow_infinity=False),
         matrix=st.lists(st.floats(allow_nan=False, allow_infinity=False), max_size=10),
     )
     @settings(max_examples=100)
@@ -457,6 +457,7 @@ class TestPBTEvaluateBreedEnergyHighEnergy(unittest.TestCase):
         func = get_function("evaluate_breed_energy")
         memory = {}
         mob_state = _mob_state(life_stage="adult", energy=energy)
+        mob_state["health"] = 100.0
         outputs = ["find_partner", "evaluate_danger_check"]
 
         result = func(matrix, memory, outputs, mob_state)
@@ -471,12 +472,12 @@ class TestPBTEvaluateBreedEnergyHighEnergy(unittest.TestCase):
 
 @st.composite
 def ineligible_mob_state(draw):
-    """Generate mob_state where energy <= 0 and fat <= 0 OR life_stage != 'adult' OR health < 100."""
+    """Generate mob_state where energy < 45 OR life_stage != 'adult' OR health < 80."""
     ineligible_type = draw(st.integers(min_value=0, max_value=2))
     
     if ineligible_type == 0:
         # No energy and no fat
-        energy = draw(st.floats(min_value=-10.0, max_value=0.0, allow_nan=False, allow_infinity=False))
+        energy = draw(st.floats(min_value=-10.0, max_value=44.9, allow_nan=False, allow_infinity=False))
         fat = draw(st.floats(min_value=-10.0, max_value=0.0, allow_nan=False, allow_infinity=False))
         life_stage = "adult"
         health = 100.0
@@ -491,7 +492,7 @@ def ineligible_mob_state(draw):
         energy = 50.0
         fat = 50.0
         life_stage = "adult"
-        health = draw(st.floats(min_value=0.0, max_value=99.9, allow_nan=False, allow_infinity=False))
+        health = draw(st.floats(min_value=0.0, max_value=79.9, allow_nan=False, allow_infinity=False))
         
     return energy, fat, life_stage, health
 

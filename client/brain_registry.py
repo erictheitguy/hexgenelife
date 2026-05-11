@@ -367,9 +367,11 @@ def evaluate_breed_energy(matrix, memory, outputs, mob_state):
     """
     energy = mob_state.get("energy", 0)
     life_stage = mob_state.get("life_stage", "")
+    health = mob_state.get("health", 100)
 
-    # Require energy >= 70 (spec: safety margin above server MIN_BREED_ENERGY=40)
-    if energy >= 70 and life_stage == "adult":
+    # Require energy >= 45 (above server MIN_BREED_ENERGY=40; energy caps at 50 from eating)
+    # Also require health >= 80 so injured mobs don't breed
+    if energy >= 45 and life_stage == "adult" and health >= 80:
         next_node = outputs[0] if outputs else None
     else:
         next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)

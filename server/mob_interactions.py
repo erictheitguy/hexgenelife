@@ -477,7 +477,7 @@ class MobInteractions:
             (json.dumps(pos), child_mob_id),
         )
         cursor.execute(
-            "UPDATE mob_health SET life_stage = 'baby', age = 0.0, hunger = 0.0 WHERE mob_id = ?",
+            "UPDATE mob_health SET life_stage = 'baby', age = 0.0, hunger = 0.0, fat = 20.0, energy = 50.0 WHERE mob_id = ?",
             (child_mob_id,),
         )
 

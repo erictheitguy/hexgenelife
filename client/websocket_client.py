@@ -79,6 +79,16 @@ class HexGenLifeClient:
                     if evt:
                         evt.set()
                     self.state_manager.handle_incoming_message(message)
+                elif msg_type == "MOB_BRED":
+                    payload = message.get("payload", {})
+                    child_id = payload.get("childId")
+                    parent_a_id = payload.get("parentAId")
+                    # Only the client that owns the parent adopts the child
+                    if child_id and parent_a_id in self.mob_objects and child_id not in self.mob_objects:
+                        child_mob = Mob(child_id)
+                        self.mob_objects[child_id] = child_mob
+                        self._look_events[child_id] = asyncio.Event()
+                        logger.info(f"[{self.client_id}] Adopted child mob {child_id} (parent={parent_a_id})")
                 else:
                     self.state_manager.handle_incoming_message(message)
                     # Update mob objects with MOB_UPDATE data
@@ -322,13 +332,8 @@ class ClientState:
             self._process_look_result(payload)
         elif message_type == "TICK_COMPLETE":
             pass  # handled in listen() via tick_event
-        elif message_type in ("MOB_MOVED", "GRASS_EATEN", "MOB_ATTACKED", "MOB_EATEN"):
-            pass  # informational broadcasts — no client action needed
-        elif message_type == "MOB_BRED":
-            child_id = payload.get("childId")
-            if child_id and child_id not in self.mob_objects:
-                self.mob_objects[child_id] = Mob(child_id)
-                logger.info(f"[{self.client_id}] Adopted child mob {child_id}")
+        elif message_type in ("MOB_MOVED", "GRASS_EATEN", "MOB_ATTACKED", "MOB_EATEN", "MOB_BRED"):
+            pass  # informational broadcasts — handled in HexGenLifeClient.listen()
         else:
             logger.warning(f"Unknown message type received: {message_type}")
 
