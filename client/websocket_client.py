@@ -13,7 +13,7 @@ import os
 LOGS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-def _configure_logging(level_name: str = "INFO"):
+def _configure_logging(level_name: str = "DEBUG"):
     level = getattr(logging, level_name.upper(), logging.INFO)
     logging.basicConfig(
         level=level,
@@ -24,7 +24,7 @@ def _configure_logging(level_name: str = "INFO"):
         ]
     )
 
-_configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
+_configure_logging(os.environ.get("LOG_LEVEL", "DEBUG"))
 logger = logging.getLogger("ClientManager")
 
 # Define the WebSocket server address
@@ -322,9 +322,13 @@ class ClientState:
             self._process_look_result(payload)
         elif message_type == "TICK_COMPLETE":
             pass  # handled in listen() via tick_event
-        elif message_type in ("MOB_MOVED", "GRASS_EATEN", "MOB_ATTACKED",
-                               "MOB_EATEN", "MOB_BRED"):
+        elif message_type in ("MOB_MOVED", "GRASS_EATEN", "MOB_ATTACKED", "MOB_EATEN"):
             pass  # informational broadcasts — no client action needed
+        elif message_type == "MOB_BRED":
+            child_id = payload.get("childId")
+            if child_id and child_id not in self.mob_objects:
+                self.mob_objects[child_id] = Mob(child_id)
+                logger.info(f"[{self.client_id}] Adopted child mob {child_id}")
         else:
             logger.warning(f"Unknown message type received: {message_type}")
 

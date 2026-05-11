@@ -88,15 +88,9 @@ def evaluate_hunger(matrix, memory, outputs, mob_state):
     physical = mob_state.get("physical", {})
     graze_threshold = physical.get("graze_threshold", 5.0)
 
-    if hunger > 3 and fat <= 0:
-        # Force move if grass is functionally depleted (< 0.5) or below graze threshold
-        tile_grass = current_tile.get("grass", 0) if current_tile else 0
-        if not current_tile or tile_grass < min(graze_threshold, 0.5):
-            # Grass is low or no tile found, move to find better grass
-            next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
-        else:
-            # Grass is sufficient, try to eat
-            next_node = outputs[0] if outputs else None
+    if hunger > 3 or fat < 20:
+        # Route to eat — action_eat will move toward grass if not already on a grass tile
+        next_node = outputs[0] if outputs else None
     else:
         next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
 
@@ -237,18 +231,16 @@ def action_eat(matrix, memory, outputs, mob_state):
     grass_tiles = [t for t in tiles if t.get("grass", 0) > 0]
 
     if not grass_tiles:
-        return {"action": "EAT_GRASS", "payload": {}}
+        # No grass visible — wander to find some
+        return evaluate_movement(matrix, memory, outputs, mob_state)
 
     nearest = min(grass_tiles, key=lambda t: t.get("distance", 999))
 
-    # Hex circumradius (center to vertex) = HEX_RADIUS = 5.0.
-    # The server uses point_in_polygon to determine if the mob is on a tile,
-    # so any mob within the circumradius is guaranteed to be inside the hex.
-    # Using the inradius (4.33) was too strict — mobs near tile edges but still
-    # inside the polygon would be sent to move instead of eating.
-    if nearest.get("distance", 999) > 5.0:
+    # Move toward the grass tile center until within inradius (4.33).
+    # This ensures the mob is standing on the grass tile before eating.
+    if nearest.get("distance", 999) > 4.33:
         return {"action": "MOVE_MOB", "payload": {
-            "targetLocation": {"x": nearest["centerX"], "y": nearest["centerY"]}
+            "targetLocation": {"x": int(nearest["centerX"]), "y": int(nearest["centerY"])}
         }}
 
     return {"action": "EAT_GRASS", "payload": {}}

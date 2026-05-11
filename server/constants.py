@@ -33,7 +33,7 @@ DEFAULT_MOB_HEALTH_EXT = {
     "energy": 50.0,
     "life_stage": "adult",   # baby | juvenile | adult | senior
     "birth_tick": 0.0,
-    "max_age": 10000.0,
+    "max_age": 500.0,
 }
 # Default starter decision tree — full prey tree with breeding path
 DEFAULT_DECISION_TREE = {

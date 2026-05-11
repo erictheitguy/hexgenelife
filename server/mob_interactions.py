@@ -285,12 +285,12 @@ class MobInteractions:
         cur_fat = h["fat"] if h else 0.0
 
         new_energy = cur_energy + energy_gain
-        # Fat accumulates from overflow above 80 at 5:1 ratio (spec 2.3)
+        # Fat accumulates from overflow above 50 at 1:1 ratio
         fat_gain = 0.0
-        if new_energy > 80.0:
-            overflow = new_energy - 80.0
-            fat_gain = overflow / 5.0
-            new_energy = 80.0
+        if new_energy > 50.0:
+            overflow = new_energy - 50.0
+            fat_gain = overflow
+            new_energy = 50.0
         new_energy = min(100.0, new_energy)
         new_fat = min(100.0, cur_fat + fat_gain)
         cursor.execute(
@@ -477,7 +477,7 @@ class MobInteractions:
             (json.dumps(pos), child_mob_id),
         )
         cursor.execute(
-            "UPDATE mob_health SET life_stage = 'baby', age = 0.0 WHERE mob_id = ?",
+            "UPDATE mob_health SET life_stage = 'baby', age = 0.0, hunger = 0.0 WHERE mob_id = ?",
             (child_mob_id,),
         )
 
