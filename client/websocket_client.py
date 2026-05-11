@@ -85,7 +85,8 @@ class HexGenLifeClient:
                     parent_a_id = payload.get("parentAId")
                     # Only the client that owns the parent adopts the child
                     if child_id and parent_a_id in self.mob_objects and child_id not in self.mob_objects:
-                        child_mob = Mob(child_id)
+                        parent_mob_type = self.mob_objects[parent_a_id].mob_type
+                        child_mob = Mob(child_id, mob_type=parent_mob_type)
                         self.mob_objects[child_id] = child_mob
                         self._look_events[child_id] = asyncio.Event()
                         logger.info(f"[{self.client_id}] Adopted child mob {child_id} (parent={parent_a_id})")
@@ -119,7 +120,8 @@ class HexGenLifeClient:
         target_mobs = self.mob_ids if self.mob_ids else [f"mob_{self.client_id}"]
         for mob_id in target_mobs:
             if mob_id not in self.mob_objects:
-                self.mob_objects[mob_id] = Mob(mob_id)
+                mob_type = "predator" if "predator" in mob_id else "prey"
+                self.mob_objects[mob_id] = Mob(mob_id, mob_type=mob_type)
                 self._look_events[mob_id] = asyncio.Event()
 
         tick_num = 0

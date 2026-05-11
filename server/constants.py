@@ -78,6 +78,52 @@ DEFAULT_DECISION_TREE = {
     }
 }
 
+DEFAULT_PREDATOR_DECISION_TREE = {
+    "root": "evaluate_state",
+    "nodes": {
+        "evaluate_state": {
+            "function": "evaluate_state",
+            "outputs": ["evaluate_hunger_pred", "evaluate_eat_carcass"]
+        },
+        "evaluate_hunger_pred": {
+            "function": "evaluate_hunger",
+            "outputs": ["evaluate_eat_carcass", "evaluate_eat_carcass"]
+        },
+        "evaluate_eat_carcass": {
+            "function": "evaluate_eat_carcass",
+            "outputs": ["action_eat_mob", "evaluate_breed_energy"]
+        },
+        "action_eat_mob": {
+            "function": "action_eat_mob",
+            "outputs": []
+        },
+        "evaluate_breed_energy": {
+            "function": "evaluate_breed_energy",
+            "outputs": ["find_partner", "evaluate_hunt"]
+        },
+        "evaluate_hunt": {
+            "function": "evaluate_attack_target",
+            "outputs": ["action_attack", "evaluate_movement"]
+        },
+        "find_partner": {
+            "function": "find_partner",
+            "outputs": ["action_breed", "evaluate_hunt"]
+        },
+        "action_breed": {
+            "function": "action_breed",
+            "outputs": []
+        },
+        "evaluate_movement": {
+            "function": "evaluate_movement",
+            "outputs": []
+        },
+        "action_attack": {
+            "function": "action_attack",
+            "outputs": []
+        },
+    }
+}
+
 def flat_top_corner(center_x, center_y, size, i):
     angle_deg = 60 * i
     angle_rad = math.pi / 180 * angle_deg

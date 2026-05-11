@@ -6,7 +6,7 @@ import sqlite3
 import time
 import uuid
 
-from server.constants import DEFAULT_MOB_PHYSICAL, DEFAULT_MOB_HEALTH_EXT, DEFAULT_DECISION_TREE
+from server.constants import DEFAULT_MOB_PHYSICAL, DEFAULT_MOB_HEALTH_EXT, DEFAULT_DECISION_TREE, DEFAULT_PREDATOR_DECISION_TREE
 
 logger = logging.getLogger("Server.MobManager")
 
@@ -98,10 +98,11 @@ class MobManager:
         )
 
         # mob_brain
+        brain_tree = DEFAULT_PREDATOR_DECISION_TREE if mob_type == "predator" else DEFAULT_DECISION_TREE
         cursor.execute(
             """INSERT OR IGNORE INTO mob_brain (mob_id, cognition_attributes, decision_tree, memory)
                VALUES (?, ?, ?, ?)""",
-            (mob_id, json.dumps({}), json.dumps(DEFAULT_DECISION_TREE), json.dumps({})),
+            (mob_id, json.dumps({}), json.dumps(brain_tree), json.dumps({})),
         )
 
         # species (ensure exists)

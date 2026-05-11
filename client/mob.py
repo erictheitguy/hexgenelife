@@ -93,8 +93,7 @@ class Mob:
                 self.state["vision"] = p["vision"]
         if "brain" in data:
             b = data["brain"]
-            if "decision_tree" in b:
-                self.set_decision_tree(b["decision_tree"])
+            # Do not overwrite decision_tree — client-side tree is authoritative
             if "memory" in b:
                 self.brain.set_memory(b["memory"])
 
