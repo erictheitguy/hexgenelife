@@ -110,7 +110,7 @@ class DatabaseInitializer:
                 graze_threshold REAL DEFAULT 5.0,
                 wander_dist REAL DEFAULT 3.0,
                 persistence REAL DEFAULT 5.0,
-                aging_rate REAL DEFAULT 0.25
+                aging_rate REAL DEFAULT 0.125
             )
         """)
         
@@ -118,7 +118,7 @@ class DatabaseInitializer:
             ("graze_threshold", "REAL", "5.0"),
             ("wander_dist", "REAL", "3.0"),
             ("persistence", "REAL", "5.0"),
-            ("aging_rate", "REAL", "0.25"),
+            ("aging_rate", "REAL", "0.125"),
             ("herd", "REAL", "0.5"),
         ]:
             try:

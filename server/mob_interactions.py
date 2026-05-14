@@ -34,7 +34,7 @@ STARVATION_TIER2 = 40.0   # hunger > 40  → 3 damage
 # Aging cost per unit of age increase
 ENERGY_PER_AGE_UNIT = 1.0
 # Age increase per tick (default, overridden by mob_physical.aging_rate)
-DEFAULT_AGING_RATE = 0.25
+DEFAULT_AGING_RATE = 0.125
 # Breeding energy cost
 BREED_ENERGY_COST = 20.0
 # Minimum energy to breed

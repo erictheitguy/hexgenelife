@@ -24,7 +24,7 @@ class TestAging(unittest.IsolatedAsyncioTestCase):
         _cleanup(DB_PATH)
 
     async def test_default_aging_rate(self):
-        """Test that age increases by 0.1 per tick and costs 0.1 energy."""
+        """Test that age increases by 0.125 per tick and costs 0.125 energy."""
         mob_id = "mob_aging_test"
         self.server._ensure_client_mob("aging_test")
         
@@ -50,8 +50,8 @@ class TestAging(unittest.IsolatedAsyncioTestCase):
         new_age = row["age"]
         new_energy = row["energy"]
         
-        self.assertAlmostEqual(new_age - initial_age, 0.1, places=2, msg="Age should increase by 0.1 units per tick by default.")
-        self.assertAlmostEqual(initial_energy - new_energy, 0.1, places=2, msg="Aging by 0.1 units should cost 0.1 energy.")
+        self.assertAlmostEqual(new_age - initial_age, 0.125, places=2, msg="Age should increase by 0.125 units per tick by default.")
+        self.assertAlmostEqual(initial_energy - new_energy, 0.125, places=2, msg="Aging by 0.125 units should cost 0.125 energy.")
 
     async def test_custom_aging_rate(self):
         """Test that custom aging rate from physical traits is used."""
