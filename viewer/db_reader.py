@@ -108,23 +108,56 @@ class DBReader:
         except Exception:
             return 0
 
-    def get_mob_lineage(self, mob_id):
-        cursor = self.conn.cursor()
+    def get_mob_lineage(self, mob_id, max_depth=4):
+        """Return a BFS ancestry chain as a list of dicts, ordered by depth.
+
+        Each entry: {mob_id, parent_a_id, parent_b_id, species_id, depth}.
+        Returns None if mob_id has no family_tree record (founder mob).
+        """
         try:
+            cursor = self.conn.cursor()
             cursor.execute(
                 "SELECT parent_a_id, parent_b_id, species_id FROM family_tree WHERE mob_id = ?",
                 (mob_id,)
             )
-            row = cursor.fetchone()
-            if row:
-                return {
-                    "parent_a_id": row["parent_a_id"],
-                    "parent_b_id": row["parent_b_id"],
-                    "species_id": row["species_id"],
-                }
+            if cursor.fetchone() is None:
+                return None
         except Exception:
-            pass
-        return None
+            return None
+
+        visited: set = set()
+        chain: list = []
+        queue: list = [(mob_id, 0)]
+        while queue:
+            current_id, depth = queue.pop(0)
+            if current_id in visited or depth > max_depth:
+                continue
+            visited.add(current_id)
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    "SELECT parent_a_id, parent_b_id, species_id FROM family_tree WHERE mob_id = ?",
+                    (current_id,)
+                )
+                row = cursor.fetchone()
+            except Exception:
+                row = None
+            parent_a = row["parent_a_id"] if row else None
+            parent_b = row["parent_b_id"] if row else None
+            species = row["species_id"] if row else None
+            chain.append({
+                "mob_id": current_id,
+                "parent_a_id": parent_a,
+                "parent_b_id": parent_b,
+                "species_id": species,
+                "depth": depth,
+            })
+            if depth < max_depth:
+                if parent_a:
+                    queue.append((parent_a, depth + 1))
+                if parent_b:
+                    queue.append((parent_b, depth + 1))
+        return chain
 
     def get_mob_brain(self, mob_id):
         cursor = self.conn.cursor()

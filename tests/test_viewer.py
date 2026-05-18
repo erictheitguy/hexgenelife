@@ -156,5 +156,102 @@ class TestDBReader(unittest.TestCase):
         self.assertEqual(mob["type"], "predator")
         self.assertEqual(mob["health"], 100)
 
+class TestDBReaderLineage(unittest.TestCase):
+    """Tests for get_mob_lineage multi-generation BFS traversal.
+
+    Fixture (3-gen chain):
+      mob_child  → parent_a=mob_pa,  parent_b=mob_pb   (Gen 0)
+      mob_pa     → parent_a=mob_gpa, parent_b=None      (Gen 1)
+      mob_pb     — no family_tree entry (founder)
+      mob_gpa    — no family_tree entry (founder)
+    """
+
+    def setUp(self):
+        self.temp_fd, self.temp_path = tempfile.mkstemp(suffix=".db")
+        conn = sqlite3.connect(self.temp_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "CREATE TABLE family_tree "
+            "(mob_id TEXT, parent_a_id TEXT, parent_b_id TEXT, species_id TEXT)"
+        )
+        cursor.executemany(
+            "INSERT INTO family_tree VALUES (?, ?, ?, ?)",
+            [
+                ("mob_child", "mob_pa", "mob_pb", "sp_child"),
+                ("mob_pa",    "mob_gpa", None,     "sp_a"),
+                # mob_pb and mob_gpa are founders — no rows
+            ],
+        )
+        conn.commit()
+        conn.close()
+        self.db_reader = DBReader(self.temp_path)
+
+    def tearDown(self):
+        self.db_reader.close()
+        os.close(self.temp_fd)
+        try:
+            os.remove(self.temp_path)
+        except OSError:
+            pass
+
+    def test_founder_returns_none(self):
+        """Mob with no family_tree entry returns None."""
+        self.assertIsNone(self.db_reader.get_mob_lineage("mob_pb"))
+        self.assertIsNone(self.db_reader.get_mob_lineage("mob_gpa"))
+        self.assertIsNone(self.db_reader.get_mob_lineage("nonexistent"))
+
+    def test_chain_root_is_queried_mob(self):
+        """First entry in chain is always the queried mob at depth 0."""
+        chain = self.db_reader.get_mob_lineage("mob_child")
+        self.assertIsNotNone(chain)
+        self.assertEqual(chain[0]["mob_id"], "mob_child")
+        self.assertEqual(chain[0]["depth"], 0)
+        self.assertEqual(chain[0]["species_id"], "sp_child")
+
+    def test_chain_includes_all_ancestors(self):
+        """Chain contains depth-0, depth-1 parents, and depth-2 grandparent."""
+        chain = self.db_reader.get_mob_lineage("mob_child")
+        mob_ids = [e["mob_id"] for e in chain]
+        self.assertIn("mob_child", mob_ids)
+        self.assertIn("mob_pa",    mob_ids)
+        self.assertIn("mob_pb",    mob_ids)   # referenced parent, no row → included as founder
+        self.assertIn("mob_gpa",   mob_ids)
+
+    def test_chain_depths_are_correct(self):
+        """Depth values reflect generation distance from queried mob."""
+        chain = self.db_reader.get_mob_lineage("mob_child")
+        by_id = {e["mob_id"]: e for e in chain}
+        self.assertEqual(by_id["mob_child"]["depth"], 0)
+        self.assertEqual(by_id["mob_pa"]["depth"],    1)
+        self.assertEqual(by_id["mob_pb"]["depth"],    1)
+        self.assertEqual(by_id["mob_gpa"]["depth"],   2)
+
+    def test_max_depth_limits_traversal(self):
+        """max_depth=1 stops before grandparents."""
+        chain = self.db_reader.get_mob_lineage("mob_child", max_depth=1)
+        mob_ids = [e["mob_id"] for e in chain]
+        self.assertIn("mob_child", mob_ids)
+        self.assertIn("mob_pa",    mob_ids)
+        self.assertIn("mob_pb",    mob_ids)
+        self.assertNotIn("mob_gpa", mob_ids)
+
+    def test_cycle_guard_prevents_infinite_loop(self):
+        """Inserting a circular parent reference does not cause an infinite loop."""
+        conn = sqlite3.connect(self.temp_path)
+        cursor = conn.cursor()
+        # mob_gpa points back to mob_child — artificial cycle
+        cursor.execute(
+            "INSERT INTO family_tree VALUES (?, ?, ?, ?)",
+            ("mob_gpa", "mob_child", None, "sp_cycle"),
+        )
+        conn.commit()
+        conn.close()
+        chain = self.db_reader.get_mob_lineage("mob_child")
+        # Each mob_id should appear only once (visited set)
+        seen_ids = [e["mob_id"] for e in chain]
+        self.assertEqual(len(seen_ids), len(set(seen_ids)))
+
+
 if __name__ == '__main__':
     unittest.main()

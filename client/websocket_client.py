@@ -1,4 +1,5 @@
 import asyncio
+import re
 import websockets
 import json
 import logging
@@ -42,6 +43,9 @@ class HexGenLifeClient:
         # Phase 4.5 — managed Mob objects
         self.mob_objects: dict[str, Mob] = {}  # {mob_id: Mob}
         self._look_events: dict[str, asyncio.Event] = {}  # {mob_id: Event}
+        # Error feedback tracking
+        self._current_acting_mob: str | None = None
+        self._last_sent_action: dict[str, dict] = {}  # {mob_id: {"type": ..., "payload": ...}}
 
 
     async def connect(self):
@@ -79,6 +83,9 @@ class HexGenLifeClient:
                     if evt:
                         evt.set()
                     self.state_manager.handle_incoming_message(message)
+                elif msg_type == "ERROR":
+                    self.state_manager.handle_incoming_message(message)
+                    self._handle_error_feedback(message.get("payload", {}))
                 elif msg_type == "MOB_BRED":
                     payload = message.get("payload", {})
                     child_id = payload.get("childId")
@@ -176,12 +183,19 @@ class HexGenLifeClient:
                     action_type = action["action"]
                     action_payload = action.get("payload", {})
                     action_payload["mobId"] = mob_id
+                    self._current_acting_mob = mob_id
+                    self._last_sent_action[mob_id] = {"type": action_type, "payload": action_payload}
                     await self.send_message(action_type, action_payload)
                     logger.debug(f"[{self.client_id}] Brain action for {mob_id}: {action_type}")
                 else:
                     # Fallback: random movement
                     target_x = random.randint(-10, 10)
                     target_y = random.randint(-10, 10)
+                    self._current_acting_mob = mob_id
+                    self._last_sent_action[mob_id] = {
+                        "type": "MOVE_MOB",
+                        "payload": {"targetLocation": {"x": target_x, "y": target_y}},
+                    }
                     await self.send_move_mob(mob_id, target_x, target_y)
                 t_action_total += time.perf_counter() - t0
 
@@ -222,6 +236,31 @@ class HexGenLifeClient:
         logger.debug(f"[{self.client_id}] Requesting world state.")
         await self.send_message("REQUEST_WORLD_STATE", {"clientId": self.client_id})
 
+    async def send_request_brain_functions(self):
+        """Requests brain function metadata from the server and caches it in ClientState."""
+        logger.debug(f"[{self.client_id}] Requesting brain functions.")
+        await self.send_message("REQUEST_BRAIN_FUNCTIONS", {})
+
+    def _extract_mob_id_from_error(self, error_message: str) -> str | None:
+        """Extract a mob_id from server error text, e.g. 'Mob mob_1 not found.'"""
+        m = re.search(r'\bMob (\S+) not found', error_message)
+        return m.group(1) if m else None
+
+    def _handle_error_feedback(self, payload: dict):
+        """Attribute a server ERROR to the responsible mob and record it in memory."""
+        error_code = payload.get("errorCode", "UNKNOWN")
+        error_msg = payload.get("errorMessage", "")
+        mob_id = self._extract_mob_id_from_error(error_msg) or self._current_acting_mob
+        if mob_id and mob_id in self.mob_objects:
+            last_action = self._last_sent_action.get(mob_id)
+            self.mob_objects[mob_id].record_error(error_code, last_action)
+            logger.debug(
+                f"[{self.client_id}] Error {error_code} attributed to {mob_id} "
+                f"(action={last_action.get('type') if last_action else None})"
+            )
+        else:
+            logger.warning(f"[{self.client_id}] Could not attribute error {error_code} to any mob.")
+
     async def run(self):
         """Main entry point for the client logic with auto-reconnect."""
         base_delay = 1
@@ -236,6 +275,7 @@ class HexGenLifeClient:
                 # Initial request to ensure mob is created and state is synced
                 delay = base_delay
                 await self.send_request_world_state()
+                await self.send_request_brain_functions()
                 
                 # Listen blocks until connection drops or all mobs die
                 listen_task = asyncio.create_task(self.listen())
@@ -277,8 +317,9 @@ class ClientState:
     """Simple Observable Pattern State Manager for the client."""
     def __init__(self):
         self._state = {
-            "mobs": {},  # {mobId: {health: {...}, brain: {...}, geneTraits: {...}}}
-            "worldTiles": {} # {hexId: {location: {...}, resources: {...}}}
+            "mobs": {},          # {mobId: {health: {...}, brain: {...}, geneTraits: {...}}}
+            "worldTiles": {},    # {hexId: {location: {...}, resources: {...}}}
+            "brain_functions": {}  # {function_id: {metadata}} — populated from BRAIN_FUNCTIONS_LIST
         }
         # Define expected initial structure for better type hinting/clarity
         self._initial_state_structure = {
@@ -334,8 +375,18 @@ class ClientState:
             self._process_look_result(payload)
         elif message_type == "TICK_COMPLETE":
             pass  # handled in listen() via tick_event
-        elif message_type in ("MOB_MOVED", "GRASS_EATEN", "MOB_ATTACKED", "MOB_EATEN", "MOB_BRED"):
-            pass  # informational broadcasts — handled in HexGenLifeClient.listen()
+        elif message_type == "BRAIN_FUNCTIONS_LIST":
+            self._process_brain_functions_list(payload)
+        elif message_type == "MOB_MOVED":
+            self._process_mob_moved(payload)
+        elif message_type == "GRASS_EATEN":
+            self._process_grass_eaten(payload)
+        elif message_type == "MOB_ATTACKED":
+            self._process_mob_attacked(payload)
+        elif message_type == "MOB_EATEN":
+            self._process_mob_eaten(payload)
+        elif message_type == "MOB_BRED":
+            self._process_mob_bred(payload)
         else:
             logger.warning(f"Unknown message type received: {message_type}")
 
@@ -396,6 +447,77 @@ class ClientState:
                 f"{len(payload.get('tiles', []))} tiles, "
                 f"{len(payload.get('mobs', []))} mobs visible"
             )
+
+    def _process_brain_functions_list(self, payload: dict):
+        """Cache brain function metadata from BRAIN_FUNCTIONS_LIST, keyed by function_id."""
+        functions = payload.get("functions", [])
+        for fn in functions:
+            fid = fn.get("function_id")
+            if fid:
+                self._state["brain_functions"][fid] = fn
+        logger.debug(f"Cached {len(functions)} brain functions from server.")
+
+    def get_brain_function(self, function_id: str) -> dict | None:
+        """Return cached metadata for a brain function, or None if not yet fetched."""
+        return self._state["brain_functions"].get(function_id)
+
+    def _process_mob_moved(self, payload: dict):
+        mob_id = payload.get("mobId")
+        position = payload.get("position")
+        if not mob_id or position is None:
+            return
+        if mob_id in self._state["mobs"]:
+            self._state["mobs"][mob_id]["position"] = position
+        else:
+            self._state["mobs"][mob_id] = {"mob_id": mob_id, "position": position}
+        logger.debug(f"MOB_MOVED: {mob_id} → {position}")
+
+    def _process_grass_eaten(self, payload: dict):
+        tile_id = payload.get("tileId")
+        remaining = payload.get("grassRemaining")
+        if tile_id is None or remaining is None:
+            return
+        tile = self._state["worldTiles"].get(tile_id)
+        if tile is None:
+            try:
+                tile = self._state["worldTiles"].get(int(tile_id))
+            except (ValueError, TypeError):
+                pass
+        if tile is None:
+            logger.debug(f"GRASS_EATEN: tile {tile_id} not in state, skipping.")
+            return
+        tile_data = tile.get("tileData")
+        if tile_data and "resources" in tile_data:
+            tile_data["resources"]["grass"] = remaining
+        elif "grass" in tile:
+            tile["grass"] = remaining
+        elif "Grass" in tile:
+            tile["Grass"] = remaining
+        logger.debug(f"GRASS_EATEN: tile {tile_id} grass → {remaining}")
+
+    def _process_mob_attacked(self, payload: dict):
+        target_id = payload.get("targetId")
+        damage = payload.get("damage", 0.0)
+        if not target_id or target_id not in self._state["mobs"]:
+            return
+        mob = self._state["mobs"][target_id]
+        health_block = mob.get("health")
+        if isinstance(health_block, dict) and "health" in health_block:
+            health_block["health"] = max(0.0, health_block["health"] - damage)
+            logger.debug(f"MOB_ATTACKED: {target_id} health -{damage}")
+
+    def _process_mob_eaten(self, payload: dict):
+        target_id = payload.get("targetId")
+        if target_id and target_id in self._state["mobs"]:
+            del self._state["mobs"][target_id]
+            logger.debug(f"MOB_EATEN: removed {target_id} from state")
+
+    def _process_mob_bred(self, payload: dict):
+        child_id = payload.get("childId")
+        parent_a = payload.get("parentAId")
+        if child_id and child_id not in self._state["mobs"]:
+            self._state["mobs"][child_id] = {"mob_id": child_id, "parentAId": parent_a}
+            logger.debug(f"MOB_BRED: added child {child_id} (parent={parent_a})")
 
     def trigger_render_update(self):
         """Public method to be called by the main loop to signal the viewer to re-render."""

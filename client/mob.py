@@ -149,6 +149,12 @@ class Mob:
         """Return brain memory for persistence."""
         return self.brain.get_memory()
 
+    def record_error(self, error_code: str, action: dict | None = None):
+        """Write a server error and its action context into brain memory for next tick."""
+        self.brain.memory["last_error"] = {"code": error_code, "action": action}
+        action_type = action.get("type") if action else None
+        self.logger.warning(f"Action error recorded: {error_code} (action={action_type})")
+
     def set_decision_tree(self, tree: dict):
         """Update the brain's decision tree structure."""
         self.brain.tree = tree

@@ -155,10 +155,11 @@ class Renderer:
                 f"Fitness: {selected_obj['fitness'] if selected_obj['fitness'] is not None else 'N/A'}",
             ]
             if lineage:
+                root = lineage[0]
                 lines += [
-                    f"Parent A: {lineage.get('parent_a_id', 'N/A')}",
-                    f"Parent B: {lineage.get('parent_b_id', 'N/A')}",
-                    f"Species ID: {lineage.get('species_id', 'N/A')}",
+                    f"Parent A: {root.get('parent_a_id') or 'N/A'}",
+                    f"Parent B: {root.get('parent_b_id') or 'N/A'}",
+                    f"Species ID: {root.get('species_id') or 'N/A'}",
                 ]
         elif obj_type == "tile":
             lines = [
@@ -192,7 +193,10 @@ class Renderer:
             self.lineage_btn_rect = lin_rect
 
     def render_lineage_window(self, lineage, mob_id):
-        panel_w, panel_h = 400, 200
+        entries = lineage or []
+        row_h = 22
+        panel_w = 500
+        panel_h = min(400, max(120, len(entries) * row_h + 70))
         panel_rect = pygame.Rect(
             self.screen.get_width() // 2 - panel_w // 2,
             self.screen.get_height() // 2 - panel_h // 2,
@@ -205,24 +209,28 @@ class Renderer:
 
         hdr = self.font.render(f"Lineage: {mob_id}", True, (100, 255, 100))
         self.screen.blit(hdr, (panel_rect.x + 10, panel_rect.y + 10))
-
         close_surf = self.font.render("[Click outside to close]", True, (150, 150, 150))
         self.screen.blit(close_surf, (panel_rect.right - 220, panel_rect.y + 10))
 
         y = panel_rect.y + 40
-        if lineage:
-            lines = [
-                f"Parent A:  {lineage.get('parent_a_id') or 'N/A'}",
-                f"Parent B:  {lineage.get('parent_b_id') or 'N/A'}",
-                f"Species:   {lineage.get('species_id') or 'N/A'}",
-            ]
+        if entries:
+            for entry in entries:
+                depth = entry["depth"]
+                mid = entry["mob_id"]
+                sp = entry.get("species_id") or "?"
+                pa = entry.get("parent_a_id") or "—"
+                pb = entry.get("parent_b_id") or "—"
+                indent = "  " * depth
+                if pa == "—" and pb == "—":
+                    text = f"{indent}Gen {depth}: {mid}  [sp:{sp}]  (founder)"
+                else:
+                    text = f"{indent}Gen {depth}: {mid}  [sp:{sp}]  A:{pa} / B:{pb}"
+                surf = self.font.render(text, True, (220, 255, 220))
+                self.screen.blit(surf, (panel_rect.x + 10, y))
+                y += row_h
         else:
-            lines = ["No lineage data (founder mob or no breeding record)."]
-
-        for line in lines:
-            surf = self.font.render(line, True, (220, 255, 220))
-            self.screen.blit(surf, (panel_rect.x + 20, y))
-            y += 22
+            surf = self.font.render("No lineage data (founder mob or no breeding record).", True, (220, 255, 220))
+            self.screen.blit(surf, (panel_rect.x + 10, y))
 
         self.lineage_window_rect = panel_rect
 
