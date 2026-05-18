@@ -608,12 +608,72 @@ class TestCombatAndCarnivory(unittest.IsolatedAsyncioTestCase):
         """Cannot eat a living mob."""
         self.server._ensure_client_mob("hungry_pred")
         self.server._ensure_client_mob("alive_prey")
-        
+
         mock_ws = AsyncMock()
         with unittest.mock.patch.object(self.server, "send_error", new_callable=AsyncMock) as mock_err:
             await self.server._handle_eat_mob({"mobId": "mob_hungry_pred", "targetId": "mob_alive_prey"}, mock_ws)
             mock_err.assert_awaited_once()
             self.assertIn("TARGET_NOT_DEAD", mock_err.call_args[0][1])
+
+    async def test_eat_mob_energy_gain_bounded(self):
+        """A single kill must give exactly ENERGY_FROM_MOB energy (capped at 100)."""
+        from server.mob_interactions import ENERGY_FROM_MOB, FAT_FROM_MOB
+        self.server._ensure_client_mob("pred_e", mob_type="predator")
+        self.server._ensure_client_mob("prey_e", mob_type="prey")
+
+        cursor = self.server.db_conn.cursor()
+        # Start predator at low energy so the full gain is visible
+        cursor.execute("UPDATE mob_health SET energy = 10.0, fat = 0.0 WHERE mob_id = 'mob_pred_e'")
+        cursor.execute("UPDATE mob_genes SET death = 1.0 WHERE mob_id = 'mob_prey_e'")
+        self.server.db_conn.commit()
+
+        mock_ws = AsyncMock()
+        await self.server._handle_eat_mob({"mobId": "mob_pred_e", "targetId": "mob_prey_e"}, mock_ws)
+
+        h = self.server._get_mob_health("mob_pred_e")
+        self.assertAlmostEqual(h["energy"], min(100.0, 10.0 + ENERGY_FROM_MOB), places=2)
+        self.assertAlmostEqual(h["fat"], FAT_FROM_MOB, places=2)
+
+    async def test_eat_mob_does_not_trigger_breed_threshold_from_low_energy(self):
+        """A predator at minimum viable energy should not clear breed threshold from one kill alone."""
+        from server.mob_interactions import ENERGY_FROM_MOB
+        MIN_BREED_ENERGY = 40.0
+        self.server._ensure_client_mob("pred_b", mob_type="predator")
+        self.server._ensure_client_mob("prey_b", mob_type="prey")
+
+        cursor = self.server.db_conn.cursor()
+        # Start just below breed threshold minus full gain
+        start_energy = max(0.0, MIN_BREED_ENERGY - ENERGY_FROM_MOB - 1.0)
+        cursor.execute("UPDATE mob_health SET energy = ?, fat = 0.0 WHERE mob_id = 'mob_pred_b'",
+                       (start_energy,))
+        cursor.execute("UPDATE mob_genes SET death = 1.0 WHERE mob_id = 'mob_prey_b'")
+        self.server.db_conn.commit()
+
+        mock_ws = AsyncMock()
+        await self.server._handle_eat_mob({"mobId": "mob_pred_b", "targetId": "mob_prey_b"}, mock_ws)
+
+        h = self.server._get_mob_health("mob_pred_b")
+        self.assertLess(h["energy"], MIN_BREED_ENERGY,
+                        "A single kill from low energy must not cross the breed threshold")
+
+    async def test_eat_mob_satiation_halves_fat_gain(self):
+        """Fat gain is halved when predator fat already exceeds the satiation threshold."""
+        from server.mob_interactions import FAT_FROM_MOB, FAT_SATIATION_THRESHOLD
+        self.server._ensure_client_mob("pred_s", mob_type="predator")
+        self.server._ensure_client_mob("prey_s", mob_type="prey")
+
+        cursor = self.server.db_conn.cursor()
+        cursor.execute("UPDATE mob_health SET energy = 50.0, fat = ? WHERE mob_id = 'mob_pred_s'",
+                       (FAT_SATIATION_THRESHOLD + 1.0,))
+        cursor.execute("UPDATE mob_genes SET death = 1.0 WHERE mob_id = 'mob_prey_s'")
+        self.server.db_conn.commit()
+
+        mock_ws = AsyncMock()
+        await self.server._handle_eat_mob({"mobId": "mob_pred_s", "targetId": "mob_prey_s"}, mock_ws)
+
+        h = self.server._get_mob_health("mob_pred_s")
+        expected_fat = min(100.0, FAT_SATIATION_THRESHOLD + 1.0 + FAT_FROM_MOB * 0.5)
+        self.assertAlmostEqual(h["fat"], expected_fat, places=2)
 
 # -----------------------------------------------------------------------
 # Phase 4.8 & 4.9 — Aging & Breeding

@@ -20,8 +20,12 @@ GRASS_PER_EAT = 5.0
 ENERGY_PER_EAT = 10.0
 # Attack damage per hit
 BASE_ATTACK_DAMAGE = 10.0
-# Energy gained from eating a mob
-ENERGY_FROM_MOB = 30.0
+# Energy gained from eating a mob (reduced from 30 to prevent instant breed-threshold crossing)
+ENERGY_FROM_MOB = 20.0
+# Fat gained from eating a mob (explicit constant; was ENERGY_FROM_MOB * 0.5 = 15.0)
+FAT_FROM_MOB = 8.0
+# Fat level above which gains from eating are halved (satiation curve)
+FAT_SATIATION_THRESHOLD = 40.0
 # Hunger increase per tick
 HUNGER_PER_TICK = 1.0
 # Fat consumed per tick (resting metabolism) — kept for reference
@@ -395,10 +399,17 @@ class MobInteractions:
             return
 
         cursor = self.db_conn.cursor()
+        cursor.execute("SELECT fat FROM mob_health WHERE mob_id = ?", (mob_id,))
+        h = cursor.fetchone()
+        cur_fat = h["fat"] if h else 0.0
+
+        # Satiation curve: halve fat gains when predator is already well-fed
+        fat_gain = FAT_FROM_MOB * 0.5 if cur_fat > FAT_SATIATION_THRESHOLD else FAT_FROM_MOB
+
         cursor.execute(
             "UPDATE mob_health SET energy = MIN(100.0, energy + ?), fat = MIN(100.0, fat + ?) "
             "WHERE mob_id = ?",
-            (ENERGY_FROM_MOB, ENERGY_FROM_MOB * 0.5, mob_id),
+            (ENERGY_FROM_MOB, fat_gain, mob_id),
         )
         # Remove consumed mob
         cursor.execute("DELETE FROM mobs WHERE mob_id = ?", (target_id,))
