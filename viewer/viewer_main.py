@@ -5,11 +5,14 @@ import pygame
 from viewer.db_reader import DBReader
 from viewer.camera import Camera
 from viewer.renderer import Renderer
+from viewer.ws_observer import ViewerWSObserver, apply_event
 
 def main():
     parser = argparse.ArgumentParser(description="HexGenLife Pygame Viewer")
     default_db = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "server", "game_state.db")
     parser.add_argument("--db", default=default_db, help="Path to game_state.db")
+    parser.add_argument("--ws-uri", default="ws://localhost:8765",
+                        help="WebSocket server URI for live event updates (empty string to disable)")
     args = parser.parse_args()
 
     pygame.init()
@@ -24,6 +27,11 @@ def main():
     db_reader = DBReader(args.db)
     camera = Camera(WIDTH, HEIGHT)
     renderer = Renderer(screen, font)
+
+    ws_observer = None
+    if args.ws_uri:
+        ws_observer = ViewerWSObserver(args.ws_uri)
+        ws_observer.start()
     
     clock = pygame.time.Clock()
     
@@ -70,7 +78,12 @@ def main():
     while running:
         current_time = pygame.time.get_ticks()
         
-        # 1. DB Polling
+        # 1a. Apply incremental WS events (between DB reconciliation passes)
+        if ws_observer:
+            for msg_type, payload in ws_observer.drain():
+                apply_event(world_state, msg_type, payload)
+
+        # 1b. DB Polling (full reconciliation every 500 ms)
         if current_time - last_poll_time >= POLL_INTERVAL_MS:
             try:
                 world_state = db_reader.get_world_state()
@@ -212,6 +225,8 @@ def main():
         pygame.display.flip()
         clock.tick(60)
 
+    if ws_observer:
+        ws_observer.stop()
     db_reader.close()
     pygame.quit()
 
