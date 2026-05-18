@@ -278,6 +278,117 @@ class TestBrainRegistry(unittest.TestCase):
 
 
 # -----------------------------------------------------------------------
+# Prey dispersal / centering fix
+# -----------------------------------------------------------------------
+class TestPreyDispersal(unittest.TestCase):
+    """Validates that herd suppression drives prey away from depleted areas."""
+
+    def _move_func(self):
+        return get_function("evaluate_movement")
+
+    def _mob_state(self, cx=0, cy=0, hunger=5.0, herd=0.5):
+        return {
+            "mob_type": "prey",
+            "position": {"x": cx, "y": cy},
+            "hunger": hunger,
+            "fat": 5.0,
+            "energy": 40.0,
+            "health": 100.0,
+            "physical": {"wander_dist": 3.0, "persistence": 5.0, "speed": 1.0, "herd": herd},
+        }
+
+    def _look_data(self, tiles, mobs=None):
+        return {"tiles": tiles, "mobs": mobs or []}
+
+    def test_depleted_local_grass_suppresses_herd_moves_toward_distant_grass(self):
+        """When local tile grass < threshold, mob must move toward distant grass, not toward cluster."""
+        func = self._move_func()
+        mob_at_origin = self._mob_state(cx=0, cy=0)
+
+        # Local tile (at origin) is depleted; distant tile at (20, 0) has good grass
+        memory = {"last_look": self._look_data(
+            tiles=[
+                {"centerX": 0,  "centerY": 0, "grass": 0.5, "distance": 0.0},   # local — depleted
+                {"centerX": 20, "centerY": 0, "grass": 5.0, "distance": 20.0},  # distant — rich
+            ],
+            mobs=[
+                # Cluster of prey sitting at origin (where local grass is depleted)
+                {"mob_id": "peer_1", "mob_type": "prey", "position": {"x": 1, "y": 0}, "alive": True, "distance": 1.0},
+                {"mob_id": "peer_2", "mob_type": "prey", "position": {"x":-1, "y": 0}, "alive": True, "distance": 1.0},
+            ],
+        )}
+
+        result = func([], memory, [], mob_at_origin)
+        self.assertEqual(result["action"], "MOVE_MOB")
+        # Must move in the +x direction (toward rich grass at x=20), not back toward cluster at x≈0
+        self.assertGreater(result["payload"]["targetLocation"]["x"], 0)
+
+    def test_good_local_grass_preserves_herd_blend(self):
+        """When local grass is above threshold, herd vector is still active."""
+        from client.brain_registry import GRASS_HERD_SUPPRESS_THRESHOLD
+        func = self._move_func()
+        mob_at_origin = self._mob_state(cx=0, cy=0, herd=0.5)
+
+        # Local tile has good grass; cluster is at (0, 10)
+        memory = {"last_look": self._look_data(
+            tiles=[
+                {"centerX": 0, "centerY": 0, "grass": GRASS_HERD_SUPPRESS_THRESHOLD + 1.0, "distance": 0.0},
+                {"centerX": 5, "centerY": 0, "grass": 3.0, "distance": 5.0},
+            ],
+            mobs=[
+                {"mob_id": "peer_1", "mob_type": "prey", "position": {"x": 0, "y": 10}, "alive": True, "distance": 10.0},
+            ],
+        )}
+
+        result = func([], memory, [], mob_at_origin)
+        self.assertEqual(result["action"], "MOVE_MOB")
+        # With herd active, the herd centroid at y=10 pulls movement upward (y > 0)
+        self.assertGreater(result["payload"]["targetLocation"]["y"], 0)
+
+    def test_depleted_area_no_visible_grass_triggers_random_wander(self):
+        """When local grass is depleted and no visible tile has grass above seek minimum,
+        the mob must wander in a random direction rather than staying put or clustering."""
+        func = self._move_func()
+        mob_at_origin = self._mob_state(cx=0, cy=0)
+
+        # All tiles have traces of grass below GRASS_SEEK_MIN — should not anchor the mob
+        memory = {"last_look": self._look_data(
+            tiles=[
+                {"centerX": 0, "centerY": 0, "grass": 0.3, "distance": 0.0},
+                {"centerX": 3, "centerY": 0, "grass": 0.5, "distance": 3.0},
+            ],
+            mobs=[
+                # Cluster at origin — with herd suppressed, should not pull mob back
+                {"mob_id": "peer_1", "mob_type": "prey", "position": {"x": 1, "y": 0}, "alive": True, "distance": 1.0},
+            ],
+        )}
+
+        result = func([], memory, [], mob_at_origin)
+        self.assertEqual(result["action"], "MOVE_MOB")
+        # Must move somewhere — not stay at (0, 0)
+        loc = result["payload"]["targetLocation"]
+        self.assertFalse(loc["x"] == 0 and loc["y"] == 0,
+                         "Mob must wander away from depleted position")
+
+    def test_trivial_grass_traces_ignored_by_grass_vector(self):
+        """Grass tiles below GRASS_SEEK_MIN must not anchor the grass seek vector."""
+        from client.brain_registry import GRASS_SEEK_MIN
+        func = self._move_func()
+        # Mob at (0,0); only tile is at origin with trace grass; no cluster
+        memory = {"last_look": self._look_data(
+            tiles=[{"centerX": 0, "centerY": 0, "grass": GRASS_SEEK_MIN - 0.1, "distance": 0.0}],
+            mobs=[],
+        )}
+        mob_state = self._mob_state(cx=0, cy=0, herd=0.0)
+        result = func([], memory, [], mob_state)
+        self.assertEqual(result["action"], "MOVE_MOB")
+        # With both vectors zero, mob must wander — not stay at origin
+        loc = result["payload"]["targetLocation"]
+        self.assertFalse(loc["x"] == 0 and loc["y"] == 0,
+                         "Trace grass must not prevent wander")
+
+
+# -----------------------------------------------------------------------
 # Phase 4.5 — Decision Tree Engine
 # -----------------------------------------------------------------------
 class TestMobBrain(unittest.TestCase):

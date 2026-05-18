@@ -19,6 +19,13 @@ import logging
 logger = logging.getLogger("BrainRegistry")
 
 ATTACK_RANGE = 3.0
+# Herd instinct is suppressed when the mob's local tile grass falls below this value.
+# Prevents cluster pull from overriding the need to disperse when the shared area is depleted.
+GRASS_HERD_SUPPRESS_THRESHOLD = 2.0
+# Minimum grass value on a tile for it to count as a seek target.
+# Tiles below this are ignored when computing the grass movement vector,
+# preventing tiny residual grass from anchoring mobs to a depleted area.
+GRASS_SEEK_MIN = 1.0
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -133,8 +140,13 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
     """Decide where to move — toward food, away from danger, or wander.
 
     Wander vector is a blend of:
-      - grass vector: toward the highest-grass visible tile
+      - grass vector: toward the best visible tile with grass > GRASS_SEEK_MIN
       - herd vector: toward centroid of visible same-type mobs (scaled by herd metric)
+
+    Herd instinct is suppressed when the mob's local tile grass is below
+    GRASS_HERD_SUPPRESS_THRESHOLD, forcing dispersal rather than cluster pull.
+    When both vectors are zero (depleted area, no cluster) the mob takes a
+    persistent random wander direction to explore for new grass.
     """
     look_data = memory.get("last_look", {})
     current_pos = mob_state.get("position", {"x": 0, "y": 0})
@@ -170,11 +182,21 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
     tiles = look_data.get("tiles", [])
     visible_mobs = look_data.get("mobs", [])
 
-    # --- Grass vector: toward highest-grass tile ---
+    # Grass level at the mob's current position (nearest visible tile)
+    local_grass = 0.0
+    if tiles:
+        nearest_tile = min(tiles, key=lambda t: t.get("distance", 999))
+        local_grass = nearest_tile.get("grass", 0.0)
+
+    # Suppress herd when local grass is depleted — mob must disperse to find food
+    if local_grass < GRASS_HERD_SUPPRESS_THRESHOLD:
+        herd = 0.0
+
+    # --- Grass vector: toward highest-grass visible tile above seek minimum ---
     gvx, gvy = 0.0, 0.0
     if tiles:
         best = max(tiles, key=lambda t: t.get("grass", 0))
-        if best.get("grass", 0) > 0:
+        if best.get("grass", 0) > GRASS_SEEK_MIN:
             dx, dy = best["centerX"] - cx, best["centerY"] - cy
             d = math.sqrt(dx*dx + dy*dy) or 1
             gvx, gvy = dx/d, dy/d
@@ -190,7 +212,7 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
         hvx, hvy = dx/d, dy/d
 
     # --- Blend vectors: grass weighted by (1-herd), herd weighted by herd ---
-    # If no grass or no herd data, fall back to persistent wander direction
+    # If no usable grass and herd is suppressed, fall back to persistent wander
     if gvx == 0 and gvy == 0 and hvx == 0 and hvy == 0:
         # Pure wander with persistence
         wander_steps = memory.get("wander_steps", 0)
