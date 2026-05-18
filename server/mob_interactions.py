@@ -20,6 +20,8 @@ GRASS_PER_EAT = 5.0
 ENERGY_PER_EAT = 10.0
 # Attack damage per hit
 BASE_ATTACK_DAMAGE = 10.0
+# Energy spent by attacker per attack action
+ATTACK_ENERGY_COST = 2.5
 # Energy gained from eating a mob (reduced from 30 to prevent instant breed-threshold crossing)
 ENERGY_FROM_MOB = 20.0
 # Fat gained from eating a mob (explicit constant; was ENERGY_FROM_MOB * 0.5 = 15.0)
@@ -349,6 +351,10 @@ class MobInteractions:
             "UPDATE mob_health SET health = MAX(0, health - ?) WHERE mob_id = ?",
             (damage, target_id),
         )
+        cursor.execute(
+            "UPDATE mob_health SET energy = MAX(0, energy - ?) WHERE mob_id = ?",
+            (ATTACK_ENERGY_COST, mob_id),
+        )
         self.db_conn.commit()
 
         # Check if target died
@@ -393,8 +399,8 @@ class MobInteractions:
         t_genes = self.db_conn.cursor()
         t_genes.execute("SELECT death FROM mob_genes WHERE mob_id = ?", (target_id,))
         row = t_genes.fetchone()
-        if row is None or row["death"] is None:
-            await self.server.send_error(websocket, "TARGET_ALIVE",
+        if row is None or not row["death"]:
+            await self.server.send_error(websocket, "TARGET_NOT_DEAD",
                                          "Cannot eat a living mob.")
             return
 

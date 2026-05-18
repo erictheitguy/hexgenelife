@@ -63,7 +63,7 @@ class MobManager:
         cursor.execute(
             """INSERT OR IGNORE INTO mob_genes (mob_id, mobType, fitnessScore, death, expired)
                VALUES (?, ?, ?, ?, ?)""",
-            (mob_id, mob_type, 0.0, 0.0, False),
+            (mob_id, mob_type, 0.0, None, False),
         )
 
         # mob_health
