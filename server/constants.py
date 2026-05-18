@@ -41,7 +41,15 @@ DEFAULT_DECISION_TREE = {
     "nodes": {
         "evaluate_state": {
             "function": "evaluate_state",
-            "outputs": ["evaluate_hunger", "evaluate_breed_energy"]
+            "outputs": ["evaluate_danger_check", "evaluate_hunger"]
+        },
+        "evaluate_danger_check": {
+            "function": "evaluate_danger",
+            "outputs": ["evaluate_flee", "evaluate_hunger"]
+        },
+        "evaluate_flee": {
+            "function": "evaluate_flee",
+            "outputs": []
         },
         "evaluate_hunger": {
             "function": "evaluate_hunger",
@@ -49,7 +57,7 @@ DEFAULT_DECISION_TREE = {
         },
         "evaluate_breed_energy": {
             "function": "evaluate_breed_energy",
-            "outputs": ["find_partner", "evaluate_danger_check"]
+            "outputs": ["find_partner", "evaluate_movement"]
         },
         "find_partner": {
             "function": "find_partner",
@@ -57,14 +65,6 @@ DEFAULT_DECISION_TREE = {
         },
         "action_breed": {
             "function": "action_breed",
-            "outputs": []
-        },
-        "evaluate_danger_check": {
-            "function": "evaluate_danger",
-            "outputs": ["evaluate_flee", "evaluate_movement"]
-        },
-        "evaluate_flee": {
-            "function": "evaluate_flee",
             "outputs": []
         },
         "evaluate_movement": {

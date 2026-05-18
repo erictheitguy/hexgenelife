@@ -92,7 +92,7 @@ class TestTreeStructureSmoke(unittest.TestCase):
     def test_evaluate_breed_energy_outputs(self):
         self.assertEqual(
             self._node("evaluate_breed_energy")["outputs"],
-            ["find_partner", "evaluate_danger_check"],
+            ["find_partner", "evaluate_movement"],
         )
 
     def test_find_partner_node_exists(self):
@@ -111,10 +111,10 @@ class TestTreeStructureSmoke(unittest.TestCase):
         self.assertEqual(self._node("action_breed")["outputs"], [])
 
     # Existing nodes unchanged
-    def test_evaluate_danger_check_unchanged(self):
+    def test_evaluate_danger_check_routes(self):
         node = self._node("evaluate_danger_check")
         self.assertEqual(node["function"], "evaluate_danger")
-        self.assertEqual(node["outputs"], ["evaluate_flee", "evaluate_movement"])
+        self.assertEqual(node["outputs"], ["evaluate_flee", "evaluate_hunger"])
 
     def test_evaluate_flee_unchanged(self):
         node = self._node("evaluate_flee")
@@ -458,7 +458,7 @@ class TestPBTEvaluateBreedEnergyHighEnergy(unittest.TestCase):
         memory = {}
         mob_state = _mob_state(life_stage="adult", energy=energy)
         mob_state["health"] = 100.0
-        outputs = ["find_partner", "evaluate_danger_check"]
+        outputs = ["find_partner", "evaluate_movement"]
 
         result = func(matrix, memory, outputs, mob_state)
 
@@ -498,7 +498,7 @@ def ineligible_mob_state(draw):
 
 
 class TestPBTEvaluateBreedEnergyIneligible(unittest.TestCase):
-    """5.12 — PBT Property 7: evaluate_breed_energy routes ineligible mobs to danger check.
+    """5.12 — PBT Property 7: evaluate_breed_energy routes ineligible mobs to movement.
 
     Validates: Requirements 3.3
     """
@@ -515,12 +515,69 @@ class TestPBTEvaluateBreedEnergyIneligible(unittest.TestCase):
         mob_state = _mob_state(life_stage=life_stage, energy=energy)
         mob_state["fat"] = fat
         mob_state["health"] = health
-        outputs = ["find_partner", "evaluate_danger_check"]
+        outputs = ["find_partner", "evaluate_movement"]
 
         result = func(matrix, memory, outputs, mob_state)
 
         self.assertEqual(result["next"], outputs[1])
         self.assertEqual(result["matrix"], matrix)
+
+
+# ---------------------------------------------------------------------------
+# Flee topology regression — danger check must fire before hunger
+# ---------------------------------------------------------------------------
+class TestPreyFleeTopology(unittest.TestCase):
+    """Hungry prey with a nearby predator must flee, not eat.
+
+    Validates the tree topology fix: evaluate_danger_check is now the first
+    gate after evaluate_state, so hunger level cannot prevent fleeing.
+    """
+
+    def _hungry_mob_state(self):
+        return {
+            "mob_id": "prey_test",
+            "mob_type": "prey",
+            "hunger": 15.0,
+            "fat": 2.0,
+            "energy": 30.0,
+            "health": 100.0,
+            "life_stage": "adult",
+            "vision": 20.0,
+            "position": {"x": 0, "y": 0},
+        }
+
+    def test_hungry_prey_flees_visible_predator(self):
+        """Prey that is hungry AND has low fat must still flee a visible predator."""
+        brain = MobBrain(PREY_DECISION_TREE)
+        brain.memory["last_look"] = {
+            "tiles": [],
+            "mobs": [
+                {
+                    "mob_id": "pred_1",
+                    "mob_type": "predator",
+                    "alive": True,
+                    "distance": 5.0,
+                    "position": {"x": 10, "y": 0},
+                }
+            ],
+        }
+        result = brain.think(self._hungry_mob_state())
+        self.assertIsNotNone(result)
+        self.assertEqual(result["action"], "MOVE_MOB")
+        # Must move away from predator at (10, 0) — x coordinate must be <= 0
+        self.assertLessEqual(result["payload"]["targetLocation"]["x"], 0)
+
+    def test_hungry_prey_eats_when_no_predator(self):
+        """Hungry prey with no predator visible should still route to eating."""
+        brain = MobBrain(PREY_DECISION_TREE)
+        brain.memory["last_look"] = {
+            "tiles": [{"centerX": 3, "centerY": 0, "grass": 5.0, "distance": 3.0}],
+            "mobs": [],
+        }
+        result = brain.think(self._hungry_mob_state())
+        self.assertIsNotNone(result)
+        # Should produce EAT_GRASS or a MOVE_MOB toward grass — not flee
+        self.assertIn(result["action"], ("EAT_GRASS", "MOVE_MOB"))
 
 
 if __name__ == "__main__":

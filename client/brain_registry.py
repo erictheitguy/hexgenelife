@@ -62,7 +62,7 @@ def evaluate_state(matrix, memory, outputs, mob_state):
 
     state_matrix = [hunger, fat, energy, health]
 
-    # Always evaluate hunger first — evaluate_hunger will route to breeding if not hungry.
+    # Always check danger first — flee takes priority over all other behavior.
     next_node = outputs[0] if outputs else None
 
     return {"matrix": state_matrix, "next": next_node}
