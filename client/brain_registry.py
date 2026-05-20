@@ -211,6 +211,26 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
         d = math.sqrt(dx*dx + dy*dy) or 1
         hvx, hvy = dx/d, dy/d
 
+    # Predators: skip grass seeking; pursue last known prey position instead
+    if mob_type == "predator":
+        gvx, gvy = 0.0, 0.0
+        last_prey = memory.get("last_prey_pos")
+        pursue_steps = memory.get("pursue_steps", 0)
+        if last_prey and pursue_steps > 0:
+            tx, ty = last_prey["x"], last_prey["y"]
+            dx, dy = tx - cx, ty - cy
+            dist = math.sqrt(dx*dx + dy*dy) or 1
+            if dist >= 2.0:
+                memory["pursue_steps"] = pursue_steps - 1
+                move_x = int(cx + (dx/dist) * wander_dist)
+                move_y = int(cy + (dy/dist) * wander_dist)
+                return {"action": "MOVE_MOB", "payload": {
+                    "targetLocation": {"x": move_x, "y": move_y}
+                }}
+            else:
+                memory.pop("last_prey_pos", None)
+                memory["pursue_steps"] = 0
+
     # --- Blend vectors: grass weighted by (1-herd), herd weighted by herd ---
     # If no usable grass and herd is suppressed, fall back to persistent wander
     if gvx == 0 and gvy == 0 and hvx == 0 and hvy == 0:
@@ -300,6 +320,8 @@ def evaluate_attack_target(matrix, memory, outputs, mob_state):
         closest = min(targets, key=lambda m: m.get("distance", 999))
         memory["attack_target"] = closest
         memory["target_in_range"] = closest.get("distance", 999) <= ATTACK_RANGE
+        memory["last_prey_pos"] = dict(closest["position"])
+        memory["pursue_steps"] = 20
         next_node = outputs[0] if outputs else None
     else:
         memory.pop("attack_target", None)
