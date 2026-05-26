@@ -16,13 +16,13 @@ os.makedirs(LOGS_DIR, exist_ok=True)
 
 def _configure_logging(level_name: str = "DEBUG"):
     level = getattr(logging, level_name.upper(), logging.INFO)
+    handlers = [logging.FileHandler(os.path.join(LOGS_DIR, "client.log"))]
+    if sys.stdout.isatty():
+        handlers.append(logging.StreamHandler())
     logging.basicConfig(
         level=level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(os.path.join(LOGS_DIR, "client.log")),
-            logging.StreamHandler()
-        ]
+        handlers=handlers,
     )
 
 _configure_logging(os.environ.get("LOG_LEVEL", "DEBUG"))

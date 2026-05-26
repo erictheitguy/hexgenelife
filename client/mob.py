@@ -102,7 +102,7 @@ class Mob:
         self.brain.memory["last_look"] = look_payload
         # Update state from mob_self
         mob_self = look_payload.get("mob_self", {})
-        for key in ("hunger", "fat", "energy", "health", "herd", "life_stage"):
+        for key in ("hunger", "fat", "energy", "health", "herd", "life_stage", "vision"):
             if key in mob_self:
                 self.state[key] = mob_self[key]
         self.logger.debug(f"Stored look result for mob {self.mob_id}: {look_payload}")

@@ -222,14 +222,26 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
             dist = math.sqrt(dx*dx + dy*dy) or 1
             if dist >= 2.0:
                 memory["pursue_steps"] = pursue_steps - 1
-                move_x = int(cx + (dx/dist) * wander_dist)
-                move_y = int(cy + (dy/dist) * wander_dist)
+                speed = physical.get("speed", 1.5)
+                step = max(wander_dist, speed * 2)
+                move_x = int(cx + (dx/dist) * step)
+                move_y = int(cy + (dy/dist) * step)
                 return {"action": "MOVE_MOB", "payload": {
                     "targetLocation": {"x": move_x, "y": move_y}
                 }}
             else:
                 memory.pop("last_prey_pos", None)
                 memory["pursue_steps"] = 0
+        elif last_prey:
+            # Active pursuit exhausted — keep a passive directional bias toward
+            # the last known prey area until we get close enough to clear it.
+            tx, ty = last_prey["x"], last_prey["y"]
+            dx, dy = tx - cx, ty - cy
+            dist = math.sqrt(dx*dx + dy*dy) or 1
+            if dist >= 5.0:
+                gvx, gvy = dx/dist, dy/dist
+            else:
+                memory.pop("last_prey_pos", None)
 
     # --- Blend vectors: grass weighted by (1-herd), herd weighted by herd ---
     # If no usable grass and herd is suppressed, fall back to persistent wander
@@ -321,7 +333,7 @@ def evaluate_attack_target(matrix, memory, outputs, mob_state):
         memory["attack_target"] = closest
         memory["target_in_range"] = closest.get("distance", 999) <= ATTACK_RANGE
         memory["last_prey_pos"] = dict(closest["position"])
-        memory["pursue_steps"] = 20
+        memory["pursue_steps"] = 80
         next_node = outputs[0] if outputs else None
     else:
         memory.pop("attack_target", None)
@@ -333,23 +345,17 @@ def evaluate_attack_target(matrix, memory, outputs, mob_state):
 
 @register("action_attack")
 def action_attack(matrix, memory, outputs, mob_state):
-    """Emit ATTACK_MOB command targeting the mob stored in memory."""
+    """Emit ATTACK_MOB targeting the mob stored in memory.
+
+    Server does not enforce attack range, so always attack — prey dies in
+    fewer ticks regardless of distance.  evaluate_eat_carcass handles
+    moving to the resulting carcass.
+    """
     target = memory.get("attack_target")
     if not target:
-        # No target, just wander
         return evaluate_movement(matrix, memory, outputs, mob_state)
 
-    # If NOT in range, move toward the target instead of attacking
-    if not memory.get("target_in_range"):
-        tx, ty = target["position"]["x"], target["position"]["y"]
-        logger.debug(f"Target {target['mobId']} out of range. Moving toward ({tx}, {ty})")
-        return {"action": "MOVE_MOB", "payload": {
-            "targetLocation": {"x": int(tx), "y": int(ty)}
-        }}
-
-    return {"action": "ATTACK_MOB", "payload": {
-        "targetId": target["mobId"],
-    }}
+    return {"action": "ATTACK_MOB", "payload": {"targetId": target["mobId"]}}
 
 
 @register("evaluate_eat_carcass")
@@ -362,10 +368,10 @@ def evaluate_eat_carcass(matrix, memory, outputs, mob_state):
     look_data = memory.get("last_look", {})
     visible_mobs = look_data.get("mobs", [])
 
+    # Detect any visible dead prey — action_eat_mob handles moving to it
     dead_prey = [m for m in visible_mobs
                  if m.get("mob_type") == "prey"
-                 and not m.get("alive", True)
-                 and m.get("distance", 999) <= ATTACK_RANGE]
+                 and not m.get("alive", True)]
 
     if dead_prey:
         closest = min(dead_prey, key=lambda m: m.get("distance", 999))

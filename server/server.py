@@ -25,13 +25,13 @@ from server.environment.rain_process import RainProcess
 LOGS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 _log_level = getattr(logging, os.environ.get("LOG_LEVEL", "DEBUG").upper(), logging.INFO)
+_log_handlers = [logging.FileHandler(os.path.join(LOGS_DIR, "server.log"))]
+if sys.stdout.isatty():
+    _log_handlers.append(logging.StreamHandler())
 logging.basicConfig(
     level=_log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.path.join(LOGS_DIR, "server.log")),
-        logging.StreamHandler()
-    ]
+    handlers=_log_handlers,
 )
 logger = logging.getLogger("Server")
 

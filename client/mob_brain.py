@@ -145,21 +145,24 @@ PREY_DECISION_TREE = {
 PREDATOR_DECISION_TREE = {
     "root": "evaluate_state",
     "nodes": {
+        # evaluate_state always routes to carcass check first (free food wins)
         "evaluate_state": {
             "function": "evaluate_state",
-            "outputs": ["evaluate_hunger_pred", "evaluate_eat_carcass"]
-        },
-        "evaluate_hunger_pred": {
-            "function": "evaluate_hunger",
             "outputs": ["evaluate_eat_carcass", "evaluate_eat_carcass"]
         },
+        # carcass in range → eat it; none visible → check hunger
         "evaluate_eat_carcass": {
             "function": "evaluate_eat_carcass",
-            "outputs": ["action_eat_mob", "evaluate_breed_energy"]
+            "outputs": ["action_eat_mob", "evaluate_hunger_pred"]
         },
         "action_eat_mob": {
             "function": "action_eat_mob",
             "outputs": []
+        },
+        # hungry (hunger>3 or fat<20) → hunt immediately; sated → consider breeding
+        "evaluate_hunger_pred": {
+            "function": "evaluate_hunger",
+            "outputs": ["evaluate_hunt", "evaluate_breed_energy"]
         },
         "evaluate_breed_energy": {
             "function": "evaluate_breed_energy",

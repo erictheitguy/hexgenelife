@@ -83,19 +83,19 @@ DEFAULT_PREDATOR_DECISION_TREE = {
     "nodes": {
         "evaluate_state": {
             "function": "evaluate_state",
-            "outputs": ["evaluate_hunger_pred", "evaluate_eat_carcass"]
-        },
-        "evaluate_hunger_pred": {
-            "function": "evaluate_hunger",
             "outputs": ["evaluate_eat_carcass", "evaluate_eat_carcass"]
         },
         "evaluate_eat_carcass": {
             "function": "evaluate_eat_carcass",
-            "outputs": ["action_eat_mob", "evaluate_breed_energy"]
+            "outputs": ["action_eat_mob", "evaluate_hunger_pred"]
         },
         "action_eat_mob": {
             "function": "action_eat_mob",
             "outputs": []
+        },
+        "evaluate_hunger_pred": {
+            "function": "evaluate_hunger",
+            "outputs": ["evaluate_hunt", "evaluate_breed_energy"]
         },
         "evaluate_breed_energy": {
             "function": "evaluate_breed_energy",

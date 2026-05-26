@@ -22,10 +22,10 @@ ENERGY_PER_EAT = 10.0
 BASE_ATTACK_DAMAGE = 10.0
 # Energy spent by attacker per attack action
 ATTACK_ENERGY_COST = 2.5
-# Energy gained from eating a mob (reduced from 30 to prevent instant breed-threshold crossing)
-ENERGY_FROM_MOB = 20.0
-# Fat gained from eating a mob (explicit constant; was ENERGY_FROM_MOB * 0.5 = 15.0)
-FAT_FROM_MOB = 8.0
+# Energy gained from eating a mob
+ENERGY_FROM_MOB = 30.0
+# Fat gained from eating a mob
+FAT_FROM_MOB = 15.0
 # Fat level above which gains from eating are halved (satiation curve)
 FAT_SATIATION_THRESHOLD = 40.0
 # Hunger increase per tick
@@ -203,6 +203,7 @@ class MobInteractions:
             "health": health.get("health", 100.0),
             "life_stage": health.get("life_stage", "adult"),
             "herd": phys.get("herd", 0.5),
+            "vision": phys.get("vision", 20.0),
         }
 
         import websockets
@@ -588,6 +589,10 @@ class MobInteractions:
                 damage = 2.0
 
             new_health = max(0.0, health - damage)
+
+            # HP recovery when well-fed (hunger < 5, no starvation damage)
+            if new_hunger < 5 and damage == 0.0:
+                new_health = min(100.0, new_health + 0.5)
 
             # Old age death
             if new_age >= max_age:
