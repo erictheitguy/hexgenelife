@@ -1,5 +1,5 @@
 import asyncio
-from collections import deque
+from collections import Counter, deque
 import json
 import os
 import sqlite3
@@ -73,8 +73,15 @@ class GameServer:
         self._spatial_index: dict[tuple[int, int], set[str]] = {}
         self._mob_to_cell: dict[str, tuple[int, int]] = {}
         self.tick_rate = 1.0            
-        self._client_action_counts = {}  
-        self._ws_to_mob = {}             
+        self._client_action_counts = {}
+        self._ws_to_mob = {}
+        # Per-tick rejection/deferral telemetry, reset at end of each tick.
+        self._tick_accepted: Counter[str] = Counter()
+        self._tick_rej_ws_cap: Counter[str] = Counter()
+        self._tick_def_budget: Counter[str] = Counter()
+        self._tick_drop_queue_full: Counter[str] = Counter()
+        self._tick_rej_by_client: Counter[str] = Counter()
+        self._tick_rej_by_mob: Counter[str] = Counter()
         self.pending_child_spawns: list[str] = []  # child mob_ids awaiting client launch
         
         self.db_conn = sqlite3.connect(self.db_path)
@@ -237,6 +244,12 @@ class GameServer:
 
                     count = self._client_action_counts.get(websocket, 0)
                     if count >= MAX_ACTIONS_PER_TICK:
+                        self._tick_rej_ws_cap[command_type] += 1
+                        if client_id:
+                            self._tick_rej_by_client[client_id] += 1
+                        rejected_mob = payload.get("mobId")
+                        if rejected_mob:
+                            self._tick_rej_by_mob[rejected_mob] += 1
                         await self.send_error(
                             websocket, "ACTION_LIMIT_EXCEEDED",
                             f"Maximum {MAX_ACTIONS_PER_TICK} actions allowed per tick."
@@ -256,6 +269,7 @@ class GameServer:
                             0, self._client_action_counts.get(websocket, 1) - 1
                         )
                         self._queue_overflow_drops += 1
+                        self._tick_drop_queue_full[command_type] += 1
                         await self.send_error(
                             websocket, "SERVER_BUSY",
                             "Server command queue is full. Back off and retry.",
@@ -313,14 +327,17 @@ class GameServer:
                 cmd = action["command_type"]
                 if processed >= action_budget:
                     next_pending.append(action)
+                    self._tick_def_budget[cmd] += 1
                     continue
                 if cmd == "LOOK" and processed_look >= look_budget:
                     next_pending.append(action)
+                    self._tick_def_budget[cmd] += 1
                     continue
 
                 payload = action["payload"]
                 ws = action["websocket"]
                 action_counts[cmd] = action_counts.get(cmd, 0) + 1
+                self._tick_accepted[cmd] += 1
                 processed += 1
                 if cmd == "LOOK":
                     processed_look += 1
@@ -359,6 +376,19 @@ class GameServer:
             # --- Phase: broadcast / reset ---
             t0 = time.perf_counter()
             queue_depth = self.inbound_queue.qsize()
+            # Snapshot per-tick telemetry before reset so end-of-tick logging can use it.
+            tick_accepted = dict(self._tick_accepted)
+            tick_rej_ws_cap = dict(self._tick_rej_ws_cap)
+            tick_def_budget = dict(self._tick_def_budget)
+            tick_drop_queue_full = dict(self._tick_drop_queue_full)
+            top_rej_clients = self._tick_rej_by_client.most_common(5)
+            top_rej_mobs = self._tick_rej_by_mob.most_common(5)
+            self._tick_accepted.clear()
+            self._tick_rej_ws_cap.clear()
+            self._tick_def_budget.clear()
+            self._tick_drop_queue_full.clear()
+            self._tick_rej_by_client.clear()
+            self._tick_rej_by_mob.clear()
             for ws in list(self._client_action_counts):
                 self._client_action_counts[ws] = 0
             self.tick_queue.put("TICK")
@@ -394,6 +424,12 @@ class GameServer:
                 "queue_depth": queue_depth,
                 "drained": drained,
                 "degraded": self._degraded_mode,
+                "accepted": tick_accepted,
+                "rej_ws_cap": tick_rej_ws_cap,
+                "def_budget": tick_def_budget,
+                "drop_queue_full": tick_drop_queue_full,
+                "top_rej_clients": top_rej_clients,
+                "top_rej_mobs": top_rej_mobs,
             }
             logger.debug(
                 f"[TICK {tick_num}] total={t_total*1000:.1f}ms  "
@@ -402,6 +438,20 @@ class GameServer:
                 f"broadcast={t_broadcast*1000:.1f}ms  "
                 f"drained={drained} deferred={self._deferred_actions} q={queue_depth} degraded={self._degraded_mode}"
             )
+            metrics_line = {
+                "tick": tick_num,
+                "t_total_ms": round(t_total * 1000, 1),
+                "accepted": tick_accepted,
+                "rej_ws_cap": tick_rej_ws_cap,
+                "def_budget": tick_def_budget,
+                "drop_queue_full": tick_drop_queue_full,
+                "top_rej_clients": top_rej_clients,
+                "top_rej_mobs": top_rej_mobs,
+                "queue_depth": queue_depth,
+                "deferred_total": self._deferred_actions,
+                "degraded": self._degraded_mode,
+            }
+            logger.info(f"[TICK-METRICS] {json.dumps(metrics_line, separators=(',', ':'))}")
             if t_total * 1000.0 > SLOW_TICK_WARN_MS:
                 self._slow_tick_streak += 1
                 logger.warning(
