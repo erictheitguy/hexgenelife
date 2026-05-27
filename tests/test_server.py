@@ -261,6 +261,75 @@ class TestAsyncHandlers(unittest.IsolatedAsyncioTestCase):
         await self.server.ws_handler(mock_ws)
         self.assertGreaterEqual(self.server.inbound_queue.qsize(), 1)
 
+    async def test_multi_mob_client_below_cap(self):
+        """A single websocket driving 3 mobs at the legitimate LOOK+1-action cadence
+        must not trigger ACTION_LIMIT_EXCEEDED — the per-mob cap is the unit, not per-ws."""
+        for mob_suffix in ("m1", "m2", "m3"):
+            self.server._ensure_client_mob(mob_suffix)
+
+        messages = []
+        for mob_suffix in ("m1", "m2", "m3"):
+            mob_id = f"mob_{mob_suffix}"
+            messages.append(json.dumps({
+                "type": "LOOK",
+                "payload": {"mobId": mob_id, "clientId": mob_suffix},
+            }))
+            messages.append(json.dumps({
+                "type": "MOVE_MOB",
+                "payload": {
+                    "mobId": mob_id,
+                    "clientId": mob_suffix,
+                    "targetLocation": {"x": 1, "y": 1},
+                },
+            }))
+
+        async def _messages():
+            for m in messages:
+                yield m
+
+        mock_ws = AsyncMock()
+        mock_ws.__aiter__ = lambda _: _messages().__aiter__()
+        with patch.object(self.server, "send_error", new_callable=AsyncMock) as mock_err:
+            await self.server.ws_handler(mock_ws)
+
+        # All 6 actions should be enqueued; no ACTION_LIMIT_EXCEEDED emitted.
+        self.assertEqual(self.server.inbound_queue.qsize(), 6)
+        action_limit_errors = [
+            c for c in mock_err.await_args_list if c.args[1] == "ACTION_LIMIT_EXCEEDED"
+        ]
+        self.assertEqual(action_limit_errors, [],
+                         "multi-mob client below per-mob cap should not be throttled")
+
+    async def test_per_mob_cap_rejects_third_action_for_same_mob(self):
+        """Third action for the same mob in one tick must hit ACTION_LIMIT_EXCEEDED."""
+        self.server._ensure_client_mob("solo")
+        mob_id = "mob_solo"
+        messages = [
+            json.dumps({"type": "LOOK",
+                        "payload": {"mobId": mob_id, "clientId": "solo"}}),
+            json.dumps({"type": "MOVE_MOB",
+                        "payload": {"mobId": mob_id, "clientId": "solo",
+                                    "targetLocation": {"x": 1, "y": 1}}}),
+            json.dumps({"type": "MOVE_MOB",
+                        "payload": {"mobId": mob_id, "clientId": "solo",
+                                    "targetLocation": {"x": 2, "y": 2}}}),
+        ]
+
+        async def _messages():
+            for m in messages:
+                yield m
+
+        mock_ws = AsyncMock()
+        mock_ws.__aiter__ = lambda _: _messages().__aiter__()
+        with patch.object(self.server, "send_error", new_callable=AsyncMock) as mock_err:
+            await self.server.ws_handler(mock_ws)
+
+        self.assertEqual(self.server.inbound_queue.qsize(), 2)
+        action_limit_errors = [
+            c for c in mock_err.await_args_list if c.args[1] == "ACTION_LIMIT_EXCEEDED"
+        ]
+        self.assertEqual(len(action_limit_errors), 1)
+
     async def test_tick_loop_respects_look_budget(self):
         """LOOK processing should be capped per simulation tick."""
         self.server._ensure_client_mob("looker")

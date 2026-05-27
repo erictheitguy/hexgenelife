@@ -38,7 +38,7 @@ logging.basicConfig(
 logger = logging.getLogger("Server")
 
 _DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "game_state.db")
-MAX_ACTIONS_PER_TICK = 3
+MAX_ACTIONS_PER_MOB_PER_TICK = 2
 MAX_QUEUE_SIZE = 5000
 MAX_ACTIONS_PER_SIM_TICK = 600
 MAX_LOOKS_PER_SIM_TICK = 240
@@ -73,7 +73,9 @@ class GameServer:
         self._spatial_index: dict[tuple[int, int], set[str]] = {}
         self._mob_to_cell: dict[str, tuple[int, int]] = {}
         self.tick_rate = 1.0            
-        self._client_action_counts = {}
+        # Per-(websocket, mob_id) action counts for the per-mob action cap.
+        # Reset at the end of each tick. Non-mob commands bypass the cap entirely.
+        self._mob_action_counts: dict[tuple, int] = {}
         self._ws_to_mob = {}
         # Per-tick rejection/deferral telemetry, reset at end of each tick.
         self._tick_accepted: Counter[str] = Counter()
@@ -209,7 +211,6 @@ class GameServer:
 
     async def ws_handler(self, websocket, path="/"):
         self.clients.add(websocket)
-        self._client_action_counts[websocket] = 0
         logger.info(f"Client connected. Total clients: {len(self.clients)}")
         try:
             async for raw_message in websocket:
@@ -242,21 +243,26 @@ class GameServer:
                         )
                         continue
 
-                    count = self._client_action_counts.get(websocket, 0)
-                    if count >= MAX_ACTIONS_PER_TICK:
-                        self._tick_rej_ws_cap[command_type] += 1
-                        if client_id:
-                            self._tick_rej_by_client[client_id] += 1
-                        rejected_mob = payload.get("mobId")
-                        if rejected_mob:
-                            self._tick_rej_by_mob[rejected_mob] += 1
-                        await self.send_error(
-                            websocket, "ACTION_LIMIT_EXCEEDED",
-                            f"Maximum {MAX_ACTIONS_PER_TICK} actions allowed per tick."
-                        )
-                        continue
+                    # Per-mob action cap: a single mob may only issue
+                    # MAX_ACTIONS_PER_MOB_PER_TICK actions per server tick. Non-mob
+                    # commands (REQUEST_WORLD_STATE, REQUEST_BRAIN_FUNCTIONS) bypass the cap.
+                    target_mob_id = payload.get("mobId")
+                    cap_key: Optional[tuple] = None
+                    if target_mob_id:
+                        cap_key = (websocket, target_mob_id)
+                        count = self._mob_action_counts.get(cap_key, 0)
+                        if count >= MAX_ACTIONS_PER_MOB_PER_TICK:
+                            self._tick_rej_ws_cap[command_type] += 1
+                            if client_id:
+                                self._tick_rej_by_client[client_id] += 1
+                            self._tick_rej_by_mob[target_mob_id] += 1
+                            await self.send_error(
+                                websocket, "ACTION_LIMIT_EXCEEDED",
+                                f"Mob {target_mob_id} exceeded {MAX_ACTIONS_PER_MOB_PER_TICK} actions per tick."
+                            )
+                            continue
+                        self._mob_action_counts[cap_key] = count + 1
 
-                    self._client_action_counts[websocket] = count + 1
                     action = {
                         "websocket": websocket,
                         "command_type": command_type,
@@ -265,9 +271,10 @@ class GameServer:
                     try:
                         self.inbound_queue.put_nowait(action)
                     except asyncio.QueueFull:
-                        self._client_action_counts[websocket] = max(
-                            0, self._client_action_counts.get(websocket, 1) - 1
-                        )
+                        if cap_key is not None:
+                            self._mob_action_counts[cap_key] = max(
+                                0, self._mob_action_counts.get(cap_key, 1) - 1
+                            )
                         self._queue_overflow_drops += 1
                         self._tick_drop_queue_full[command_type] += 1
                         await self.send_error(
@@ -285,7 +292,9 @@ class GameServer:
             logger.info("Client disconnected.")
         finally:
             self.clients.discard(websocket)
-            self._client_action_counts.pop(websocket, None)
+            self._mob_action_counts = {
+                k: v for k, v in self._mob_action_counts.items() if k[0] is not websocket
+            }
             mob_id = self._ws_to_mob.pop(websocket, None)
             if mob_id and self.db_conn:
                 cursor = self.db_conn.cursor()
@@ -389,8 +398,7 @@ class GameServer:
             self._tick_drop_queue_full.clear()
             self._tick_rej_by_client.clear()
             self._tick_rej_by_mob.clear()
-            for ws in list(self._client_action_counts):
-                self._client_action_counts[ws] = 0
+            self._mob_action_counts.clear()
             self.tick_queue.put("TICK")
             cursor = self.db_conn.cursor()
             cursor.execute(
