@@ -146,12 +146,17 @@ class MobInteractions:
         vision = phys.get("vision", 20.0)
         ox, oy = pos["x"], pos["y"]
 
-        # Tiles within vision
+        # Tiles within vision. The BETWEEN clauses let SQLite use
+        # idx_hex_tiles_cx_cy to narrow to the bounding box; the quadratic
+        # check then filters the box corners off.
         cursor = self.db_conn.cursor()
         cursor.execute(
-            "SELECT * FROM hex_tiles WHERE "
-            "(centerX - ?) * (centerX - ?) + (centerY - ?) * (centerY - ?) <= ? * ?",
-            (ox, ox, oy, oy, vision, vision),
+            "SELECT * FROM hex_tiles "
+            "WHERE centerX BETWEEN ? AND ? "
+            "  AND centerY BETWEEN ? AND ? "
+            "  AND (centerX - ?) * (centerX - ?) + (centerY - ?) * (centerY - ?) <= ? * ?",
+            (ox - vision, ox + vision, oy - vision, oy + vision,
+             ox, ox, oy, oy, vision, vision),
         )
         tiles = []
         for row in cursor.fetchall():
@@ -171,10 +176,16 @@ class MobInteractions:
             nearby_ids = self.server.get_nearby_mob_ids(ox, oy, vision)
         if nearby_ids is not None:
             nearby_ids.discard(mob_id)
+        # Join mob_physical so camouflage/size come back on the same row —
+        # avoids N per-mob SELECTs inside the detection loop below.
         if nearby_ids is None:
             cursor.execute(
-                "SELECT m.*, g.death FROM mobs m "
+                "SELECT m.*, g.death, "
+                "       COALESCE(p.camouflage, 0.5) AS camouflage, "
+                "       COALESCE(p.size, 1.0) AS size "
+                "FROM mobs m "
                 "LEFT JOIN mob_genes g ON m.mob_id = g.mob_id "
+                "LEFT JOIN mob_physical p ON m.mob_id = p.mob_id "
                 "WHERE m.mob_id != ? AND m.is_active = 1",
                 (mob_id,),
             )
@@ -185,8 +196,12 @@ class MobInteractions:
             ph = ",".join("?" for _ in nearby_ids)
             params = tuple(nearby_ids)
             cursor.execute(
-                f"SELECT m.*, g.death FROM mobs m "
+                f"SELECT m.*, g.death, "
+                f"       COALESCE(p.camouflage, 0.5) AS camouflage, "
+                f"       COALESCE(p.size, 1.0) AS size "
+                f"FROM mobs m "
                 f"LEFT JOIN mob_genes g ON m.mob_id = g.mob_id "
+                f"LEFT JOIN mob_physical p ON m.mob_id = p.mob_id "
                 f"WHERE m.mob_id IN ({ph}) AND m.is_active = 1",
                 params,
             )
@@ -210,11 +225,11 @@ class MobInteractions:
 
             is_dead = bool(m.get("death"))
 
-            # Dead mobs don't use camouflage — always visible as carcasses
+            # Dead mobs don't use camouflage — always visible as carcasses.
+            # camouflage/size were already joined in above; no per-mob SELECT.
             if not is_dead:
-                t_phys = self.mob_manager.get_mob_physical(m["mob_id"])
-                camouflage = t_phys.get("camouflage", 0.5)
-                size = t_phys.get("size", 1.0)
+                camouflage = m["camouflage"]
+                size = m["size"]
                 last_move = self.mob_last_move_dist.get(m["mob_id"], 0.0)
                 detection = vision - camouflage * 10.0 + last_move * 0.5 + size * 2.0
                 if detection < dist:
