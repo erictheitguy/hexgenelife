@@ -318,6 +318,47 @@ class TestHexGenLifeClientAsync(unittest.IsolatedAsyncioTestCase):
         self.client._stale_perception["mob_x"] = True
         self.assertTrue(self.client._should_send_look("mob_x", tick_num=1))
 
+    def test_should_send_look_is_deterministic_per_call(self):
+        """Jitter is seeded by (mob_id, cycle); repeated calls must match."""
+        self.client._base_look_stride = 3
+        a = self.client._should_send_look("mob_deterministic", tick_num=7)
+        b = self.client._should_send_look("mob_deterministic", tick_num=7)
+        self.assertEqual(a, b)
+
+    def test_jitter_varies_look_slot_across_cycles(self):
+        """For one mob across multiple cycles, the LOOK slot should not be
+        identical every cycle — jitter must actually move it."""
+        self.client._base_look_stride = 4
+        mob_id = "mob_jitter_target"
+        look_slots = []
+        for cycle in range(8):
+            for slot in range(4):
+                tick = cycle * 4 + slot
+                if self.client._should_send_look(mob_id, tick_num=tick):
+                    look_slots.append(slot)
+        # Roughly one LOOK per cycle, distributed across multiple slots.
+        self.assertGreaterEqual(len(look_slots), 6)
+        self.assertGreater(len(set(look_slots)), 1,
+                           f"Jitter didn't vary the LOOK slot, got {look_slots}")
+
+    def test_jitter_distributes_looks_across_many_mobs(self):
+        """50 mobs across one look_stride window should not pile every LOOK on the
+        same tick — distribution should stay below a hard ceiling."""
+        self.client._base_look_stride = 2
+        mob_ids = [f"mob_{i:03d}" for i in range(50)]
+        per_tick_counts = {0: 0, 1: 0}
+        for tick in range(2):
+            for mob_id in mob_ids:
+                if self.client._should_send_look(mob_id, tick_num=tick):
+                    per_tick_counts[tick] += 1
+        # With stride=2, total LOOKs over 2 ticks should be ~50 (one per mob).
+        total = sum(per_tick_counts.values())
+        self.assertGreater(total, 30)
+        # Neither tick should claim more than 70% of the LOOKs.
+        for tick, count in per_tick_counts.items():
+            self.assertLess(count / total, 0.7,
+                            f"tick {tick} took {count}/{total} LOOKs — re-sync detected")
+
     async def test_listen_look_result_clears_in_flight_and_stale(self):
         """LOOK_RESULT must clear both _look_in_flight and _stale_perception for the mob."""
         from client.mob import Mob

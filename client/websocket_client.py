@@ -139,13 +139,24 @@ class HexGenLifeClient:
     def _should_send_look(self, mob_id: str, tick_num: int) -> bool:
         """Decide whether autonomous_loop should issue a LOOK for this mob this tick.
 
-        Combines the cadence stride, the stale-perception forcing flag, and the
-        in-flight guard so a previously sent LOOK can't be duplicated before its
-        LOOK_RESULT (or a reconnect) clears the flag.
+        Combines the cadence stride, a per-(mob, cycle) jitter that de-syncs
+        clients whose mob_hash collides under modular arithmetic, the
+        stale-perception forcing flag, and the in-flight guard so a previously
+        sent LOOK can't be duplicated before its LOOK_RESULT or a reconnect
+        clears the flag. Jitter is RNG-seeded by mob_id so runs are reproducible.
         """
-        mob_hash = sum(ord(c) for c in mob_id) % 97
         look_stride = self._base_look_stride + (1 if self._throttle_ticks > 0 else 0)
-        wants_look = ((tick_num + mob_hash) % look_stride == 0) or self._stale_perception.get(mob_id, False)
+        if look_stride <= 1:
+            wants_look = True
+        else:
+            mob_hash = sum(ord(c) for c in mob_id) % 97
+            base_offset = mob_hash % look_stride
+            cycle = tick_num // look_stride
+            jitter = random.Random(f"{mob_id}:{cycle}").choice((-1, 0, 1))
+            target_in_cycle = (base_offset + jitter) % look_stride
+            current_in_cycle = tick_num % look_stride
+            wants_look = (current_in_cycle == target_in_cycle)
+        wants_look = wants_look or self._stale_perception.get(mob_id, False)
         return wants_look and mob_id not in self._look_in_flight
 
     async def autonomous_loop(self):
