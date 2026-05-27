@@ -54,6 +54,10 @@ class HexGenLifeClient:
         self._force_reconnect = asyncio.Event()
         self._look_timeout_streak: dict[str, int] = {}
         self._stale_perception: dict[str, bool] = {}
+        # mob_ids whose LOOK request is still outstanding on the server.
+        # Prevents double-sending LOOK before a prior LOOK_RESULT or
+        # connection reset clears the flag.
+        self._look_in_flight: set[str] = set()
         self._throttle_ticks = 0
         self._base_look_stride = max(1, int(os.environ.get("LOOK_STRIDE", "2")))
 
@@ -93,6 +97,9 @@ class HexGenLifeClient:
                         self.mob_objects[look_mob_id].update_state({
                             "health": mob_self,
                         })
+                    # Clear in-flight + stale flags so the next tick can send a fresh LOOK.
+                    self._look_in_flight.discard(look_mob_id)
+                    self._stale_perception[look_mob_id] = False
                     evt = self._look_events.get(look_mob_id)
                     if evt:
                         evt.set()
@@ -128,6 +135,18 @@ class HexGenLifeClient:
         except websockets.exceptions.ConnectionClosed:
             self.connection_state = "DISCONNECTED"
             logger.warning(f"[{self.client_id}] Connection closed by server.")
+
+    def _should_send_look(self, mob_id: str, tick_num: int) -> bool:
+        """Decide whether autonomous_loop should issue a LOOK for this mob this tick.
+
+        Combines the cadence stride, the stale-perception forcing flag, and the
+        in-flight guard so a previously sent LOOK can't be duplicated before its
+        LOOK_RESULT (or a reconnect) clears the flag.
+        """
+        mob_hash = sum(ord(c) for c in mob_id) % 97
+        look_stride = self._base_look_stride + (1 if self._throttle_ticks > 0 else 0)
+        wants_look = ((tick_num + mob_hash) % look_stride == 0) or self._stale_perception.get(mob_id, False)
+        return wants_look and mob_id not in self._look_in_flight
 
     async def autonomous_loop(self):
         """Orchestrates autonomous actions synchronized with server ticks.
@@ -174,13 +193,12 @@ class HexGenLifeClient:
             for mob_id in alive_mobs:
                 mob = self.mob_objects[mob_id]
                 mob.reset_tick()
-                mob_hash = sum(ord(c) for c in mob_id) % 97
-                look_stride = self._base_look_stride + (1 if self._throttle_ticks > 0 else 0)
-                should_look = ((tick_num + mob_hash) % look_stride == 0) or self._stale_perception.get(mob_id, False)
+                should_look = self._should_send_look(mob_id, tick_num)
 
                 # Step 1: Send LOOK command
                 t0 = time.perf_counter()
                 if should_look:
+                    self._look_in_flight.add(mob_id)
                     await self.send_message("LOOK", {"mobId": mob_id})
 
                 # Wait briefly for LOOK_RESULT (with timeout)
@@ -328,6 +346,7 @@ class HexGenLifeClient:
                 self._force_reconnect.clear()
                 self._look_timeout_streak.clear()
                 self._stale_perception.clear()
+                self._look_in_flight.clear()
                 await self.send_request_world_state()
                 await self.send_request_brain_functions()
                 self.connection_state = "CONNECTED"

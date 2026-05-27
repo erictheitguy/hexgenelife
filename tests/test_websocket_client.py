@@ -299,6 +299,50 @@ class TestHexGenLifeClientAsync(unittest.IsolatedAsyncioTestCase):
         # Should log a warning but not raise
         await self.client.send_message("MOVE_MOB", {"mobId": "m1", "targetLocation": {"x": 0, "y": 0}})
 
+    async def test_send_message_failure_sets_force_reconnect(self):
+        mock_ws = AsyncMock()
+        mock_ws.send.side_effect = OSError("send failed")
+        self.client.websocket = mock_ws
+        await self.client.send_message("LOOK", {"mobId": "m1"})
+        self.assertTrue(self.client._force_reconnect.is_set())
+
+    # --- LOOK in-flight guard ---------------------------------------------
+    def test_should_send_look_blocked_when_in_flight(self):
+        """Stale perception forces wants_look=True, but in-flight guard suppresses send."""
+        self.client._stale_perception["mob_x"] = True
+        self.client._look_in_flight.add("mob_x")
+        self.assertFalse(self.client._should_send_look("mob_x", tick_num=1))
+
+    def test_should_send_look_allowed_when_not_in_flight(self):
+        """Stale perception with no in-flight LOOK should send."""
+        self.client._stale_perception["mob_x"] = True
+        self.assertTrue(self.client._should_send_look("mob_x", tick_num=1))
+
+    async def test_listen_look_result_clears_in_flight_and_stale(self):
+        """LOOK_RESULT must clear both _look_in_flight and _stale_perception for the mob."""
+        from client.mob import Mob
+
+        mob_id = f"mob_{self.client_id}"
+        self.client.mob_objects[mob_id] = Mob(mob_id, mob_type="prey")
+        self.client._look_events[mob_id] = asyncio.Event()
+        self.client._look_in_flight.add(mob_id)
+        self.client._stale_perception[mob_id] = True
+
+        async def _messages():
+            yield json.dumps({
+                "type": "LOOK_RESULT",
+                "payload": {"mob_self": {"mobId": mob_id}}
+            })
+
+        mock_ws = MagicMock()
+        mock_ws.__aiter__ = lambda _: _messages().__aiter__()
+        self.client.websocket = mock_ws
+
+        await self.client.listen()
+
+        self.assertNotIn(mob_id, self.client._look_in_flight)
+        self.assertFalse(self.client._stale_perception[mob_id])
+
     # --- listen ------------------------------------------------------------
     async def test_listen_sets_tick_event_on_tick_complete(self):
         async def _messages():
@@ -355,6 +399,26 @@ class TestHexGenLifeClientAsync(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(mock_ws.send.called)
         sent = json.loads(mock_ws.send.call_args_list[0][0][0])
         self.assertEqual(sent["type"], "LOOK")
+
+    async def test_autonomous_loop_forces_reconnect_on_look_timeout_streak(self):
+        from client.mob import Mob
+        async def _timeout_wait_for(coro, timeout):
+            coro.close()
+            raise asyncio.TimeoutError
+
+        mock_ws = AsyncMock()
+        self.client.websocket = mock_ws
+        self.client.connection_state = "CONNECTED"
+        self.client._base_look_stride = 1
+        self.client.mob_objects["mob_test_client_1"] = Mob("mob_test_client_1", mob_type="prey")
+        self.client._look_events["mob_test_client_1"] = asyncio.Event()
+        self.client._look_timeout_streak["mob_test_client_1"] = 2
+        with patch("client.websocket_client.asyncio.wait_for", side_effect=_timeout_wait_for):
+            self.client.tick_event.set()
+            task = asyncio.create_task(self.client.autonomous_loop())
+            await asyncio.sleep(0.05)
+            task.cancel()
+            self.assertTrue(self.client._force_reconnect.is_set())
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +502,11 @@ class TestErrorFeedback(unittest.IsolatedAsyncioTestCase):
         self.client.websocket = mock_ws
 
         await self.client.listen()  # Should not raise
+
+    def test_server_busy_applies_client_throttle(self):
+        self.client._throttle_ticks = 0
+        self.client._handle_error_feedback({"errorCode": "SERVER_BUSY", "errorMessage": "queue full"})
+        self.assertGreaterEqual(self.client._throttle_ticks, 1)
 
 
 if __name__ == "__main__":
