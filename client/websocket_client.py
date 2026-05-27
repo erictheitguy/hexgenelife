@@ -31,6 +31,7 @@ logger = logging.getLogger("ClientManager")
 # Define the WebSocket server address
 SERVER_URI = "ws://localhost:8765"
 LOOK_TIMEOUT_LIMIT = 3
+LOOK_RESPONSE_TIMEOUT_SEC = 2.0
 
 class HexGenLifeClient:
     def __init__(self, uri, client_id, mob_ids=None):
@@ -159,6 +160,65 @@ class HexGenLifeClient:
         wants_look = wants_look or self._stale_perception.get(mob_id, False)
         return wants_look and mob_id not in self._look_in_flight
 
+    async def _gather_looks(self, alive_mobs, tick_num: int,
+                            timeout: float = LOOK_RESPONSE_TIMEOUT_SEC) -> float:
+        """Send LOOKs for all mobs that should LOOK this tick, then await all
+        responses in parallel via asyncio.gather.
+
+        Replaces the serial per-mob (send + await) pattern: for a client with
+        N mobs, parallel awaits cap total LOOK latency at one round-trip
+        instead of N round-trips. Returns wall-clock seconds spent awaiting
+        (caller logs this for telemetry).
+        """
+        look_pending: dict[str, asyncio.Event] = {}
+        for mob_id in alive_mobs:
+            if not self._should_send_look(mob_id, tick_num):
+                continue
+            self._look_in_flight.add(mob_id)
+            look_evt = self._look_events.get(mob_id)
+            if look_evt is not None:
+                look_evt.clear()
+                look_pending[mob_id] = look_evt
+            await self.send_message("LOOK", {"mobId": mob_id})
+
+        if not look_pending:
+            return 0.0
+
+        async def _wait(mob_id: str, evt: asyncio.Event):
+            try:
+                await asyncio.wait_for(evt.wait(), timeout=timeout)
+                return mob_id, True
+            except asyncio.TimeoutError:
+                return mob_id, False
+
+        t0 = time.perf_counter()
+        results = await asyncio.gather(
+            *[_wait(mid, ev) for mid, ev in look_pending.items()]
+        )
+        elapsed = time.perf_counter() - t0
+
+        for mob_id, ok in results:
+            if ok:
+                self._look_timeout_streak[mob_id] = 0
+                self._stale_perception[mob_id] = False
+            else:
+                logger.warning(f"[{self.client_id}] LOOK_RESULT timeout for {mob_id}")
+                mob = self.mob_objects.get(mob_id)
+                if mob is not None:
+                    mob._awaiting_look = False
+                self._stale_perception[mob_id] = True
+                streak = self._look_timeout_streak.get(mob_id, 0) + 1
+                self._look_timeout_streak[mob_id] = streak
+                if streak >= LOOK_TIMEOUT_LIMIT:
+                    logger.error(
+                        f"[{self.client_id}] LOOK_RESULT timeout streak "
+                        f"({streak}) for {mob_id}; forcing reconnect."
+                    )
+                    self._throttle_ticks = max(self._throttle_ticks, 4)
+                    self._force_reconnect.set()
+
+        return elapsed
+
     async def autonomous_loop(self):
         """Orchestrates autonomous actions synchronized with server ticks.
 
@@ -197,44 +257,24 @@ class HexGenLifeClient:
                 self.all_mobs_dead_event.set()
                 break
 
-            t_look_total = 0.0
             t_brain_total = 0.0
             t_action_total = 0.0
 
+            # reset_tick() must run before LOOKs are fired so brain.memory
+            # is ready to receive last_look from incoming LOOK_RESULT events.
+            for mob_id in alive_mobs:
+                self.mob_objects[mob_id].reset_tick()
+
+            # Parallel LOOK phase: fire all LOOKs that pass the cadence/in-flight
+            # check, then await responses concurrently.
+            t_look_total = await self._gather_looks(alive_mobs, tick_num)
+
+            if self._force_reconnect.is_set():
+                # Skip action phase; outer run() loop will tear down and reconnect.
+                continue
+
             for mob_id in alive_mobs:
                 mob = self.mob_objects[mob_id]
-                mob.reset_tick()
-                should_look = self._should_send_look(mob_id, tick_num)
-
-                # Step 1: Send LOOK command
-                t0 = time.perf_counter()
-                if should_look:
-                    self._look_in_flight.add(mob_id)
-                    await self.send_message("LOOK", {"mobId": mob_id})
-
-                # Wait briefly for LOOK_RESULT (with timeout)
-                look_evt = self._look_events.get(mob_id)
-                if should_look and look_evt:
-                    look_evt.clear()
-                    try:
-                        await asyncio.wait_for(look_evt.wait(), timeout=2.0)
-                        self._look_timeout_streak[mob_id] = 0
-                        self._stale_perception[mob_id] = False
-                    except asyncio.TimeoutError:
-                        logger.warning(f"[{self.client_id}] LOOK_RESULT timeout for {mob_id}")
-                        mob._awaiting_look = False  # proceed with stale look data
-                        self._stale_perception[mob_id] = True
-                        streak = self._look_timeout_streak.get(mob_id, 0) + 1
-                        self._look_timeout_streak[mob_id] = streak
-                        if streak >= LOOK_TIMEOUT_LIMIT:
-                            logger.error(
-                                f"[{self.client_id}] LOOK_RESULT timeout streak "
-                                f"({streak}) for {mob_id}; forcing reconnect."
-                            )
-                            self._throttle_ticks = max(self._throttle_ticks, 4)
-                            self._force_reconnect.set()
-                            break
-                t_look_total += time.perf_counter() - t0
 
                 # Step 2: Brain thinks and produces an action
                 if mob.is_dead:

@@ -6,6 +6,7 @@ Run from the project root:
 """
 import asyncio
 import json
+import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
@@ -358,6 +359,78 @@ class TestHexGenLifeClientAsync(unittest.IsolatedAsyncioTestCase):
         for tick, count in per_tick_counts.items():
             self.assertLess(count / total, 0.7,
                             f"tick {tick} took {count}/{total} LOOKs — re-sync detected")
+
+    async def test_gather_looks_runs_in_parallel(self):
+        """5 mobs awaiting LOOK_RESULT in parallel should complete in ~one round-trip,
+        not 5× round-trip. The pre-refactor serial loop would have been 5× longer."""
+        from client.mob import Mob
+
+        mob_ids = [f"mob_parallel_{i}" for i in range(5)]
+        for mob_id in mob_ids:
+            self.client.mob_objects[mob_id] = Mob(mob_id, mob_type="prey")
+            self.client._look_events[mob_id] = asyncio.Event()
+            self.client._stale_perception[mob_id] = True  # force should_send_look
+        self.client.send_message = AsyncMock()
+
+        # Set all events ~100 ms in the future. Serial would be 500 ms.
+        async def fire_events():
+            await asyncio.sleep(0.1)
+            for mob_id in mob_ids:
+                self.client._look_events[mob_id].set()
+
+        setter = asyncio.create_task(fire_events())
+        t0 = time.perf_counter()
+        elapsed = await self.client._gather_looks(mob_ids, tick_num=1, timeout=2.0)
+        wall = time.perf_counter() - t0
+        await setter
+
+        self.assertEqual(self.client.send_message.await_count, 5)
+        self.assertLess(wall, 0.35, f"_gather_looks took {wall:.3f}s — not parallel")
+        # elapsed is the wait portion only; should also be ~0.1 s, well under 0.5
+        self.assertLess(elapsed, 0.35)
+
+    async def test_gather_looks_per_mob_timeout_marks_stale_only_that_mob(self):
+        """One mob's LOOK timing out must mark only that mob stale; others stay fresh."""
+        from client.mob import Mob
+
+        fast_id, slow_id = "mob_fast", "mob_slow"
+        for mob_id in (fast_id, slow_id):
+            self.client.mob_objects[mob_id] = Mob(mob_id, mob_type="prey")
+            self.client._look_events[mob_id] = asyncio.Event()
+            self.client._stale_perception[mob_id] = True  # force should_send_look
+        self.client.send_message = AsyncMock()
+
+        async def fire_fast_only():
+            await asyncio.sleep(0.02)
+            self.client._look_events[fast_id].set()
+
+        setter = asyncio.create_task(fire_fast_only())
+        await self.client._gather_looks(
+            [fast_id, slow_id], tick_num=1, timeout=0.1
+        )
+        await setter
+
+        self.assertFalse(self.client._stale_perception[fast_id])
+        self.assertTrue(self.client._stale_perception[slow_id])
+        self.assertEqual(self.client._look_timeout_streak.get(slow_id, 0), 1)
+        self.assertEqual(self.client._look_timeout_streak.get(fast_id, 0), 0)
+
+    async def test_gather_looks_force_reconnect_after_timeout_streak(self):
+        """A mob hitting LOOK_TIMEOUT_LIMIT consecutive timeouts must trigger reconnect."""
+        from client.websocket_client import LOOK_TIMEOUT_LIMIT
+        from client.mob import Mob
+
+        mob_id = "mob_streaky"
+        self.client.mob_objects[mob_id] = Mob(mob_id, mob_type="prey")
+        self.client._look_events[mob_id] = asyncio.Event()
+        self.client._stale_perception[mob_id] = True
+        self.client._look_timeout_streak[mob_id] = LOOK_TIMEOUT_LIMIT - 1
+        self.client.send_message = AsyncMock()
+
+        await self.client._gather_looks([mob_id], tick_num=1, timeout=0.05)
+
+        self.assertTrue(self.client._force_reconnect.is_set())
+        self.assertGreaterEqual(self.client._throttle_ticks, 4)
 
     async def test_listen_look_result_clears_in_flight_and_stale(self):
         """LOOK_RESULT must clear both _look_in_flight and _stale_perception for the mob."""
