@@ -38,6 +38,7 @@ def summarize(ticks: list[dict]) -> dict:
     accepted = Counter()
     rej_ws_cap = Counter()
     def_budget = Counter()
+    def_mob_cap = Counter()
     drop_queue_full = Counter()
     rej_by_client = Counter()
     rej_by_mob = Counter()
@@ -50,6 +51,7 @@ def summarize(ticks: list[dict]) -> dict:
         accepted.update(t.get("accepted") or {})
         rej_ws_cap.update(t.get("rej_ws_cap") or {})
         def_budget.update(t.get("def_budget") or {})
+        def_mob_cap.update(t.get("def_mob_cap") or {})
         drop_queue_full.update(t.get("drop_queue_full") or {})
         for client_id, n in (t.get("top_rej_clients") or []):
             rej_by_client[client_id] += n
@@ -73,6 +75,7 @@ def summarize(ticks: list[dict]) -> dict:
         "total_accepted": dict(accepted),
         "total_rej_ws_cap": dict(rej_ws_cap),
         "total_def_budget": dict(def_budget),
+        "total_def_mob_cap": dict(def_mob_cap),
         "total_drop_queue_full": dict(drop_queue_full),
         "top_rej_clients": rej_by_client.most_common(10),
         "top_rej_mobs": rej_by_mob.most_common(10),
@@ -94,8 +97,11 @@ def print_summary(s: dict) -> None:
     print("Accepted actions (total, by type):")
     print(format_counter(s["total_accepted"]))
     print()
-    print("Rejected by per-websocket cap (ACTION_LIMIT_EXCEEDED), by type:")
+    print("Rejected by per-mob cap (age-evicted -> ACTION_LIMIT_EXCEEDED), by type:")
     print(format_counter(s["total_rej_ws_cap"]))
+    print()
+    print("Deferred by per-mob cap (waiting for cap window), by type:")
+    print(format_counter(s["total_def_mob_cap"]))
     print()
     print("Deferred by global per-tick budget, by type:")
     print(format_counter(s["total_def_budget"]))

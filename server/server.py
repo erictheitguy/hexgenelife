@@ -46,6 +46,10 @@ SLOW_TICK_WARN_MS = 800.0
 DEGRADED_SLOW_TICK_STREAK = 4
 DEGRADED_ACTION_BUDGET_SCALE = 0.75
 DEGRADED_LOOK_BUDGET_SCALE = 0.6
+# Per-mob cap overflow is deferred (not rejected) for up to this many ticks
+# before age-eviction emits ACTION_LIMIT_EXCEEDED. Scales with load tier.
+MOB_CAP_DEFER_MAX_AGE = 2
+MOB_CAP_DEFER_MAX_AGE_DEGRADED = 4
 NON_CRITICAL_EVENT_TYPES = {"MOB_MOVED", "GRASS_EATEN", "MOB_ATTACKED", "MOB_EATEN"}
 
 class GameServer:
@@ -77,10 +81,15 @@ class GameServer:
         # Reset at the end of each tick. Non-mob commands bypass the cap entirely.
         self._mob_action_counts: dict[tuple, int] = {}
         self._ws_to_mob = {}
+        # Cap-overflow actions waiting for a future tick's cap window.
+        # Each entry carries `birth_tick`; aged-out entries emit ACTION_LIMIT_EXCEEDED.
+        self._cap_overflow_queue: deque = deque()
+        self._current_tick = 0
         # Per-tick rejection/deferral telemetry, reset at end of each tick.
         self._tick_accepted: Counter[str] = Counter()
         self._tick_rej_ws_cap: Counter[str] = Counter()
         self._tick_def_budget: Counter[str] = Counter()
+        self._tick_def_mob_cap: Counter[str] = Counter()
         self._tick_drop_queue_full: Counter[str] = Counter()
         self._tick_rej_by_client: Counter[str] = Counter()
         self._tick_rej_by_mob: Counter[str] = Counter()
@@ -246,20 +255,22 @@ class GameServer:
                     # Per-mob action cap: a single mob may only issue
                     # MAX_ACTIONS_PER_MOB_PER_TICK actions per server tick. Non-mob
                     # commands (REQUEST_WORLD_STATE, REQUEST_BRAIN_FUNCTIONS) bypass the cap.
+                    # Overflow is deferred (not rejected) — the tick loop drains
+                    # _cap_overflow_queue each tick and only emits ACTION_LIMIT_EXCEEDED
+                    # if the deferred action ages out.
                     target_mob_id = payload.get("mobId")
                     cap_key: Optional[tuple] = None
                     if target_mob_id:
                         cap_key = (websocket, target_mob_id)
                         count = self._mob_action_counts.get(cap_key, 0)
                         if count >= MAX_ACTIONS_PER_MOB_PER_TICK:
-                            self._tick_rej_ws_cap[command_type] += 1
-                            if client_id:
-                                self._tick_rej_by_client[client_id] += 1
-                            self._tick_rej_by_mob[target_mob_id] += 1
-                            await self.send_error(
-                                websocket, "ACTION_LIMIT_EXCEEDED",
-                                f"Mob {target_mob_id} exceeded {MAX_ACTIONS_PER_MOB_PER_TICK} actions per tick."
-                            )
+                            self._cap_overflow_queue.append({
+                                "websocket": websocket,
+                                "command_type": command_type,
+                                "payload": payload,
+                                "birth_tick": self._current_tick,
+                            })
+                            self._tick_def_mob_cap[command_type] += 1
                             continue
                         self._mob_action_counts[cap_key] = count + 1
 
@@ -302,6 +313,38 @@ class GameServer:
                 self.db_conn.commit()
                 self.remove_from_spatial_index(mob_id)
 
+    async def _drain_cap_overflow(self, tick_num: int) -> None:
+        """Move cap-deferred actions into _pending_actions, age-evicting stale ones.
+
+        Eviction sends ACTION_LIMIT_EXCEEDED and records telemetry; surviving
+        actions are appended to _pending_actions for normal processing this tick.
+        """
+        max_age = (MOB_CAP_DEFER_MAX_AGE_DEGRADED if self._degraded_mode
+                   else MOB_CAP_DEFER_MAX_AGE)
+        while self._cap_overflow_queue:
+            entry = self._cap_overflow_queue.popleft()
+            age = tick_num - entry.get("birth_tick", tick_num)
+            if age > max_age:
+                cmd = entry["command_type"]
+                payload = entry["payload"]
+                target_mob_id = payload.get("mobId")
+                client_id = payload.get("clientId") or payload.get("client_id")
+                self._tick_rej_ws_cap[cmd] += 1
+                if client_id:
+                    self._tick_rej_by_client[client_id] += 1
+                if target_mob_id:
+                    self._tick_rej_by_mob[target_mob_id] += 1
+                await self.send_error(
+                    entry["websocket"], "ACTION_LIMIT_EXCEEDED",
+                    f"Mob {target_mob_id} action evicted after {age} ticks deferred."
+                )
+            else:
+                self._pending_actions.append({
+                    "websocket": entry["websocket"],
+                    "command_type": entry["command_type"],
+                    "payload": entry["payload"],
+                })
+
     async def _tick_loop(self):
         logger.info(f"Tick loop starting. Tick rate: {self.tick_rate}s")
         tick_num = 0
@@ -309,11 +352,13 @@ class GameServer:
             await asyncio.sleep(self.tick_rate)
             tick_start = time.perf_counter()
             tick_num += 1
+            self._current_tick = tick_num
 
             # --- Phase: action processing ---
             t0 = time.perf_counter()
             action_counts: dict[str, int] = {}
             drained = 0
+            await self._drain_cap_overflow(tick_num)
             while True:
                 try:
                     self._pending_actions.append(self.inbound_queue.get_nowait())
@@ -389,12 +434,14 @@ class GameServer:
             tick_accepted = dict(self._tick_accepted)
             tick_rej_ws_cap = dict(self._tick_rej_ws_cap)
             tick_def_budget = dict(self._tick_def_budget)
+            tick_def_mob_cap = dict(self._tick_def_mob_cap)
             tick_drop_queue_full = dict(self._tick_drop_queue_full)
             top_rej_clients = self._tick_rej_by_client.most_common(5)
             top_rej_mobs = self._tick_rej_by_mob.most_common(5)
             self._tick_accepted.clear()
             self._tick_rej_ws_cap.clear()
             self._tick_def_budget.clear()
+            self._tick_def_mob_cap.clear()
             self._tick_drop_queue_full.clear()
             self._tick_rej_by_client.clear()
             self._tick_rej_by_mob.clear()
@@ -435,6 +482,7 @@ class GameServer:
                 "accepted": tick_accepted,
                 "rej_ws_cap": tick_rej_ws_cap,
                 "def_budget": tick_def_budget,
+                "def_mob_cap": tick_def_mob_cap,
                 "drop_queue_full": tick_drop_queue_full,
                 "top_rej_clients": top_rej_clients,
                 "top_rej_mobs": top_rej_mobs,
@@ -452,10 +500,12 @@ class GameServer:
                 "accepted": tick_accepted,
                 "rej_ws_cap": tick_rej_ws_cap,
                 "def_budget": tick_def_budget,
+                "def_mob_cap": tick_def_mob_cap,
                 "drop_queue_full": tick_drop_queue_full,
                 "top_rej_clients": top_rej_clients,
                 "top_rej_mobs": top_rej_mobs,
                 "queue_depth": queue_depth,
+                "cap_overflow_depth": len(self._cap_overflow_queue),
                 "deferred_total": self._deferred_actions,
                 "degraded": self._degraded_mode,
             }

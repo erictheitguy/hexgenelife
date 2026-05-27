@@ -300,8 +300,8 @@ class TestAsyncHandlers(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(action_limit_errors, [],
                          "multi-mob client below per-mob cap should not be throttled")
 
-    async def test_per_mob_cap_rejects_third_action_for_same_mob(self):
-        """Third action for the same mob in one tick must hit ACTION_LIMIT_EXCEEDED."""
+    async def test_per_mob_cap_defers_overflow(self):
+        """Third action for the same mob in one tick must defer (no immediate error)."""
         self.server._ensure_client_mob("solo")
         mob_id = "mob_solo"
         messages = [
@@ -324,11 +324,51 @@ class TestAsyncHandlers(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.server, "send_error", new_callable=AsyncMock) as mock_err:
             await self.server.ws_handler(mock_ws)
 
+        # First two fit under the per-mob cap; third is deferred, not rejected.
         self.assertEqual(self.server.inbound_queue.qsize(), 2)
+        self.assertEqual(len(self.server._cap_overflow_queue), 1)
         action_limit_errors = [
             c for c in mock_err.await_args_list if c.args[1] == "ACTION_LIMIT_EXCEEDED"
         ]
-        self.assertEqual(len(action_limit_errors), 1)
+        self.assertEqual(action_limit_errors, [])
+
+    async def test_cap_overflow_age_evicts_stale_deferral(self):
+        """A deferred action older than MOB_CAP_DEFER_MAX_AGE must age-evict
+        with ACTION_LIMIT_EXCEEDED."""
+        mock_ws = AsyncMock()
+        # Birth at tick 1, drain at tick 100 → age = 99 >> max_age (2).
+        self.server._cap_overflow_queue.append({
+            "websocket": mock_ws,
+            "command_type": "MOVE_MOB",
+            "payload": {"mobId": "mob_stale", "clientId": "stale",
+                        "targetLocation": {"x": 0, "y": 0}},
+            "birth_tick": 1,
+        })
+        with patch.object(self.server, "send_error", new_callable=AsyncMock) as mock_err:
+            await self.server._drain_cap_overflow(tick_num=100)
+
+        # Aged out: error emitted, nothing pushed into _pending_actions.
+        self.assertEqual(len(self.server._cap_overflow_queue), 0)
+        self.assertEqual(len(self.server._pending_actions), 0)
+        mock_err.assert_awaited_once()
+        self.assertEqual(mock_err.await_args.args[1], "ACTION_LIMIT_EXCEEDED")
+
+    async def test_cap_overflow_fresh_deferral_processed(self):
+        """A deferred action within max-age must move into _pending_actions for processing."""
+        mock_ws = AsyncMock()
+        self.server._cap_overflow_queue.append({
+            "websocket": mock_ws,
+            "command_type": "MOVE_MOB",
+            "payload": {"mobId": "mob_fresh", "clientId": "fresh",
+                        "targetLocation": {"x": 0, "y": 0}},
+            "birth_tick": 5,
+        })
+        with patch.object(self.server, "send_error", new_callable=AsyncMock) as mock_err:
+            await self.server._drain_cap_overflow(tick_num=6)
+
+        self.assertEqual(len(self.server._cap_overflow_queue), 0)
+        self.assertEqual(len(self.server._pending_actions), 1)
+        mock_err.assert_not_awaited()
 
     async def test_tick_loop_respects_look_budget(self):
         """LOOK processing should be capped per simulation tick."""
