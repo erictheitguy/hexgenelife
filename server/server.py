@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 import json
 import os
 import sqlite3
@@ -9,6 +10,7 @@ import math
 import logging
 import subprocess
 import sys
+from typing import Optional
 
 from multiprocessing import Queue
 
@@ -37,6 +39,14 @@ logger = logging.getLogger("Server")
 
 _DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "game_state.db")
 MAX_ACTIONS_PER_TICK = 3
+MAX_QUEUE_SIZE = 5000
+MAX_ACTIONS_PER_SIM_TICK = 600
+MAX_LOOKS_PER_SIM_TICK = 240
+SLOW_TICK_WARN_MS = 800.0
+DEGRADED_SLOW_TICK_STREAK = 4
+DEGRADED_ACTION_BUDGET_SCALE = 0.75
+DEGRADED_LOOK_BUDGET_SCALE = 0.6
+NON_CRITICAL_EVENT_TYPES = {"MOB_MOVED", "GRASS_EATEN", "MOB_ATTACKED", "MOB_EATEN"}
 
 class GameServer:
     def __init__(self, db_path=_DEFAULT_DB):
@@ -44,6 +54,24 @@ class GameServer:
         self.db_conn = None
         self.clients = set()
         self.action_queue = []          
+        self.inbound_queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+        self._pending_actions = deque()
+        self._deferred_actions = 0
+        self._degraded_mode = False
+        self._slow_tick_streak = 0
+        self._queue_overflow_drops = 0
+        self._event_buffer = {
+            "MOB_MOVED": {},
+            "GRASS_EATEN": {},
+            "MOB_ATTACKED": {},
+            "MOB_EATEN": {},
+            "_passthrough": [],
+        }
+        self._coalesce_events = False
+        self._last_tick_stats = {}
+        self._spatial_cell_size = 12.0
+        self._spatial_index: dict[tuple[int, int], set[str]] = {}
+        self._mob_to_cell: dict[str, tuple[int, int]] = {}
         self.tick_rate = 1.0            
         self._client_action_counts = {}  
         self._ws_to_mob = {}             
@@ -51,6 +79,8 @@ class GameServer:
         
         self.db_conn = sqlite3.connect(self.db_path)
         self.db_conn.execute("PRAGMA journal_mode=WAL")
+        self.db_conn.execute("PRAGMA synchronous=NORMAL")
+        self.db_conn.execute("PRAGMA busy_timeout=5000")
         DatabaseInitializer.initialize_db(self.db_conn)
         
         self.mob_manager = MobManager(self.db_conn)
@@ -62,13 +92,52 @@ class GameServer:
         
         logger.info("GameServer initialized. Database connection established.")
 
-    async def send_error(self, websocket, error_code: str, error_message: str):
+    def _cell_for_pos(self, x: float, y: float) -> tuple[int, int]:
+        return (int(math.floor(x / self._spatial_cell_size)), int(math.floor(y / self._spatial_cell_size)))
+
+    def update_spatial_index(self, mob_id: str, pos: dict):
+        if not pos:
+            return
+        x, y = float(pos.get("x", 0.0)), float(pos.get("y", 0.0))
+        new_cell = self._cell_for_pos(x, y)
+        old_cell = self._mob_to_cell.get(mob_id)
+        if old_cell == new_cell:
+            return
+        if old_cell and old_cell in self._spatial_index:
+            self._spatial_index[old_cell].discard(mob_id)
+            if not self._spatial_index[old_cell]:
+                del self._spatial_index[old_cell]
+        self._spatial_index.setdefault(new_cell, set()).add(mob_id)
+        self._mob_to_cell[mob_id] = new_cell
+
+    def remove_from_spatial_index(self, mob_id: str):
+        old_cell = self._mob_to_cell.pop(mob_id, None)
+        if old_cell and old_cell in self._spatial_index:
+            self._spatial_index[old_cell].discard(mob_id)
+            if not self._spatial_index[old_cell]:
+                del self._spatial_index[old_cell]
+
+    def get_nearby_mob_ids(self, x: float, y: float, radius: float) -> Optional[set[str]]:
+        if not self._spatial_index:
+            return None
+        cx, cy = self._cell_for_pos(x, y)
+        r = max(1, int(math.ceil(radius / self._spatial_cell_size)))
+        out = set()
+        for dx in range(-r, r + 1):
+            for dy in range(-r, r + 1):
+                out.update(self._spatial_index.get((cx + dx, cy + dy), set()))
+        return out
+
+    async def send_error(self, websocket, error_code: str, error_message: str, extra: dict | None = None):
+        payload = {
+            "errorCode": error_code,
+            "errorMessage": error_message,
+        }
+        if extra:
+            payload.update(extra)
         err_msg = json.dumps({
             "type": "ERROR",
-            "payload": {
-                "errorCode": error_code,
-                "errorMessage": error_message,
-            },
+            "payload": payload,
         })
         try:
             await websocket.send(err_msg)
@@ -78,12 +147,58 @@ class GameServer:
     async def broadcast(self, message_type: str, payload: dict):
         if not self.clients:
             return
+        if self._coalesce_events and message_type in NON_CRITICAL_EVENT_TYPES:
+            if message_type == "MOB_MOVED":
+                mob_id = payload.get("mobId")
+                if mob_id:
+                    self._event_buffer["MOB_MOVED"][mob_id] = payload
+                    return
+            elif message_type == "GRASS_EATEN":
+                tile_id = payload.get("tileId")
+                if tile_id is not None:
+                    self._event_buffer["GRASS_EATEN"][str(tile_id)] = payload
+                    return
+            elif message_type == "MOB_ATTACKED":
+                key = f"{payload.get('attackerId')}->{payload.get('targetId')}"
+                self._event_buffer["MOB_ATTACKED"][key] = payload
+                return
+            elif message_type == "MOB_EATEN":
+                key = payload.get("targetId")
+                if key is not None:
+                    self._event_buffer["MOB_EATEN"][str(key)] = payload
+                    return
         msg = json.dumps({"type": message_type, "payload": payload})
         for client in list(self.clients):
             try:
                 await client.send(msg)
             except Exception:
                 pass
+
+    async def _flush_coalesced_events(self):
+        if not self.clients:
+            self._event_buffer = {
+                "MOB_MOVED": {},
+                "GRASS_EATEN": {},
+                "MOB_ATTACKED": {},
+                "MOB_EATEN": {},
+                "_passthrough": [],
+            }
+            return
+        for mtype in ("MOB_MOVED", "GRASS_EATEN", "MOB_ATTACKED", "MOB_EATEN"):
+            for payload in self._event_buffer[mtype].values():
+                msg = json.dumps({"type": mtype, "payload": payload})
+                for client in list(self.clients):
+                    try:
+                        await client.send(msg)
+                    except Exception:
+                        pass
+        self._event_buffer = {
+            "MOB_MOVED": {},
+            "GRASS_EATEN": {},
+            "MOB_ATTACKED": {},
+            "MOB_EATEN": {},
+            "_passthrough": [],
+        }
 
     async def ws_handler(self, websocket, path="/"):
         self.clients.add(websocket)
@@ -104,6 +219,13 @@ class GameServer:
                             self._ws_to_mob[websocket] = mob_id
                             cursor = self.db_conn.cursor()
                             cursor.execute("UPDATE mobs SET is_active = 1 WHERE mob_id = ?", (mob_id,))
+                            cursor.execute("SELECT position FROM mobs WHERE mob_id = ?", (mob_id,))
+                            row = cursor.fetchone()
+                            if row and isinstance(row["position"], str):
+                                try:
+                                    self.update_spatial_index(mob_id, json.loads(row["position"]))
+                                except json.JSONDecodeError:
+                                    pass
                             self.db_conn.commit()
 
                     if not MessageValidator.validate_message(message, command_type):
@@ -122,11 +244,23 @@ class GameServer:
                         continue
 
                     self._client_action_counts[websocket] = count + 1
-                    self.action_queue.append({
+                    action = {
                         "websocket": websocket,
                         "command_type": command_type,
                         "payload": payload,
-                    })
+                    }
+                    try:
+                        self.inbound_queue.put_nowait(action)
+                    except asyncio.QueueFull:
+                        self._client_action_counts[websocket] = max(
+                            0, self._client_action_counts.get(websocket, 1) - 1
+                        )
+                        self._queue_overflow_drops += 1
+                        await self.send_error(
+                            websocket, "SERVER_BUSY",
+                            "Server command queue is full. Back off and retry.",
+                            {"retryAfterMs": 500}
+                        )
 
                 except json.JSONDecodeError:
                     logger.error("Error: Malformed JSON received.")
@@ -143,6 +277,7 @@ class GameServer:
                 cursor = self.db_conn.cursor()
                 cursor.execute("UPDATE mobs SET is_active = 0 WHERE mob_id = ?", (mob_id,))
                 self.db_conn.commit()
+                self.remove_from_spatial_index(mob_id)
 
     async def _tick_loop(self):
         logger.info(f"Tick loop starting. Tick rate: {self.tick_rate}s")
@@ -155,34 +290,62 @@ class GameServer:
             # --- Phase: action processing ---
             t0 = time.perf_counter()
             action_counts: dict[str, int] = {}
-            if self.action_queue:
-                queue_snapshot = self.action_queue[:]
-                self.action_queue.clear()
+            drained = 0
+            while True:
+                try:
+                    self._pending_actions.append(self.inbound_queue.get_nowait())
+                    drained += 1
+                except asyncio.QueueEmpty:
+                    break
 
-                for action in queue_snapshot:
-                    cmd = action["command_type"]
-                    payload = action["payload"]
-                    ws = action["websocket"]
-                    action_counts[cmd] = action_counts.get(cmd, 0) + 1
+            self._coalesce_events = True
+            action_budget = MAX_ACTIONS_PER_SIM_TICK
+            look_budget = MAX_LOOKS_PER_SIM_TICK
+            if self._degraded_mode:
+                action_budget = max(50, int(action_budget * DEGRADED_ACTION_BUDGET_SCALE))
+                look_budget = max(20, int(look_budget * DEGRADED_LOOK_BUDGET_SCALE))
 
-                    if cmd == "MOVE_MOB":
-                        await self.mob_interactions.handle_move_mob(payload, ws)
-                    elif cmd == "REQUEST_WORLD_STATE":
-                        await self._handle_request_world_state(payload, ws)
-                    elif cmd == "LOOK":
-                        await self.mob_interactions.handle_look(payload, ws)
-                    elif cmd == "EAT_GRASS":
-                        await self.mob_interactions.handle_eat_grass(payload, ws)
-                    elif cmd == "ATTACK_MOB":
-                        await self.mob_interactions.handle_attack_mob(payload, ws)
-                    elif cmd == "EAT_MOB":
-                        await self.mob_interactions.handle_eat_mob(payload, ws)
-                    elif cmd in ("BREED", "BREED_MOB"):
-                        await self.mob_interactions.handle_breed(payload, ws)
-                    elif cmd == "REQUEST_BRAIN_FUNCTIONS":
-                        await self._handle_request_brain_functions(payload, ws)
-                    else:
-                        logger.warning(f"Unknown command queued: {cmd}")
+            processed = 0
+            processed_look = 0
+            next_pending = deque()
+            while self._pending_actions:
+                action = self._pending_actions.popleft()
+                cmd = action["command_type"]
+                if processed >= action_budget:
+                    next_pending.append(action)
+                    continue
+                if cmd == "LOOK" and processed_look >= look_budget:
+                    next_pending.append(action)
+                    continue
+
+                payload = action["payload"]
+                ws = action["websocket"]
+                action_counts[cmd] = action_counts.get(cmd, 0) + 1
+                processed += 1
+                if cmd == "LOOK":
+                    processed_look += 1
+
+                if cmd == "MOVE_MOB":
+                    await self.mob_interactions.handle_move_mob(payload, ws)
+                elif cmd == "REQUEST_WORLD_STATE":
+                    await self._handle_request_world_state(payload, ws)
+                elif cmd == "LOOK":
+                    await self.mob_interactions.handle_look(payload, ws)
+                elif cmd == "EAT_GRASS":
+                    await self.mob_interactions.handle_eat_grass(payload, ws)
+                elif cmd == "ATTACK_MOB":
+                    await self.mob_interactions.handle_attack_mob(payload, ws)
+                elif cmd == "EAT_MOB":
+                    await self.mob_interactions.handle_eat_mob(payload, ws)
+                elif cmd in ("BREED", "BREED_MOB"):
+                    await self.mob_interactions.handle_breed(payload, ws)
+                elif cmd == "REQUEST_BRAIN_FUNCTIONS":
+                    await self._handle_request_brain_functions(payload, ws)
+                else:
+                    logger.warning(f"Unknown command queued: {cmd}")
+
+            self._pending_actions = next_pending
+            self._deferred_actions = len(self._pending_actions)
             t_actions = time.perf_counter() - t0
 
             # --- Phase: metabolism ---
@@ -195,6 +358,7 @@ class GameServer:
 
             # --- Phase: broadcast / reset ---
             t0 = time.perf_counter()
+            queue_depth = self.inbound_queue.qsize()
             for ws in list(self._client_action_counts):
                 self._client_action_counts[ws] = 0
             self.tick_queue.put("TICK")
@@ -203,24 +367,60 @@ class GameServer:
                 "INSERT OR REPLACE INTO server_state (key, value) VALUES ('tick_num', ?)",
                 (str(tick_num),)
             )
+            cursor.execute(
+                "INSERT OR REPLACE INTO server_state (key, value) VALUES ('queue_depth', ?)",
+                (str(queue_depth),)
+            )
+            cursor.execute(
+                "INSERT OR REPLACE INTO server_state (key, value) VALUES ('deferred_actions', ?)",
+                (str(self._deferred_actions),)
+            )
+            cursor.execute(
+                "INSERT OR REPLACE INTO server_state (key, value) VALUES ('degraded_mode', ?)",
+                ("1" if self._degraded_mode else "0",)
+            )
             self.db_conn.commit()
+            await self._flush_coalesced_events()
+            self._coalesce_events = False
             await self.broadcast("TICK_COMPLETE", {"timestamp": time.time()})
             t_broadcast = time.perf_counter() - t0
 
             t_total = time.perf_counter() - tick_start
+            self._last_tick_stats = {
+                "tick": tick_num,
+                "processed": processed,
+                "processed_look": processed_look,
+                "deferred": self._deferred_actions,
+                "queue_depth": queue_depth,
+                "drained": drained,
+                "degraded": self._degraded_mode,
+            }
             logger.debug(
                 f"[TICK {tick_num}] total={t_total*1000:.1f}ms  "
                 f"actions={t_actions*1000:.1f}ms({sum(action_counts.values())} cmds {action_counts})  "
                 f"metabolism={t_metabolism*1000:.1f}ms  "
-                f"broadcast={t_broadcast*1000:.1f}ms"
+                f"broadcast={t_broadcast*1000:.1f}ms  "
+                f"drained={drained} deferred={self._deferred_actions} q={queue_depth} degraded={self._degraded_mode}"
             )
-            if t_total > self.tick_rate * 0.8:
+            if t_total * 1000.0 > SLOW_TICK_WARN_MS:
+                self._slow_tick_streak += 1
                 logger.warning(
                     f"[TICK {tick_num}] Slow tick: {t_total*1000:.1f}ms "
-                    f"(>{self.tick_rate*800:.0f}ms threshold). "
+                    f"(>{SLOW_TICK_WARN_MS:.0f}ms threshold). "
                     f"actions={t_actions*1000:.1f}ms  metabolism={t_metabolism*1000:.1f}ms  "
                     f"broadcast={t_broadcast*1000:.1f}ms"
                 )
+            else:
+                self._slow_tick_streak = max(0, self._slow_tick_streak - 1)
+
+            if not self._degraded_mode and self._slow_tick_streak >= DEGRADED_SLOW_TICK_STREAK:
+                self._degraded_mode = True
+                logger.warning(
+                    f"[TICK {tick_num}] Entering degraded mode after {self._slow_tick_streak} slow ticks."
+                )
+            elif self._degraded_mode and self._slow_tick_streak == 0 and self._deferred_actions < 50:
+                self._degraded_mode = False
+                logger.info(f"[TICK {tick_num}] Exiting degraded mode.")
 
     async def _flush_pending_child_spawns(self):
         """Launch a client process for every child mob queued since the last tick."""

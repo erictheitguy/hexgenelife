@@ -70,5 +70,23 @@ class TestStarvation(unittest.IsolatedAsyncioTestCase):
         death_val = cursor.fetchone()["death"]
         self.assertIsNotNone(death_val, "Mob should be dead after starvation damage exceeds remaining health")
 
+    async def test_predator_starvation_is_less_harsh_than_prey(self):
+        """Predator starvation tiers should be gentler than prey at same hunger band."""
+        self.server._ensure_client_mob("prey_cmp", mob_type="prey")
+        self.server._ensure_client_mob("pred_cmp", mob_type="predator")
+        cursor = self.server.db_conn.cursor()
+
+        cursor.execute(
+            "UPDATE mob_health SET hunger = 35.0, health = 100.0, fat = 0.0, energy = 0.0 WHERE mob_id IN (?, ?)",
+            ("mob_prey_cmp", "mob_pred_cmp"),
+        )
+        self.server.db_conn.commit()
+        await self.server.mob_interactions.process_metabolism()
+        cursor.execute("SELECT mob_id, health FROM mob_health WHERE mob_id IN (?, ?)", ("mob_prey_cmp", "mob_pred_cmp"))
+        rows = {r["mob_id"]: r["health"] for r in cursor.fetchall()}
+        prey_damage = 100.0 - rows["mob_prey_cmp"]
+        pred_damage = 100.0 - rows["mob_pred_cmp"]
+        self.assertGreater(prey_damage, pred_damage)
+
 if __name__ == "__main__":
     unittest.main()

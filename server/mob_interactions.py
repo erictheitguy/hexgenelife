@@ -23,9 +23,9 @@ BASE_ATTACK_DAMAGE = 10.0
 # Energy spent by attacker per attack action
 ATTACK_ENERGY_COST = 2.5
 # Energy gained from eating a mob
-ENERGY_FROM_MOB = 30.0
+ENERGY_FROM_MOB = 36.0
 # Fat gained from eating a mob
-FAT_FROM_MOB = 15.0
+FAT_FROM_MOB = 22.0
 # Fat level above which gains from eating are halved (satiation curve)
 FAT_SATIATION_THRESHOLD = 40.0
 # Hunger increase per tick
@@ -37,6 +37,12 @@ HUNGER_ENERGY_THRESHOLD = 60.0
 # Starvation thresholds
 STARVATION_TIER1 = 30.0   # hunger >= 30 → 2 damage
 STARVATION_TIER2 = 40.0   # hunger > 40  → 3 damage
+# Predator-specific sustain adjustments
+PREDATOR_STARVATION_TIER1 = 35.0
+PREDATOR_STARVATION_TIER2 = 45.0
+PREDATOR_HUNGER_PER_TICK = 0.8
+PREDATOR_ATTACK_ENERGY_COST = 1.8
+CARCASS_STALE_SECONDS = 60.0
 # Aging cost per unit of age increase
 ENERGY_PER_AGE_UNIT = 1.0
 # Age increase per tick (default, overridden by mob_physical.aging_rate)
@@ -54,6 +60,7 @@ class MobInteractions:
         self.mob_manager = mob_manager
         # Tracks last move distance per mob_id for camouflage detection
         self.mob_last_move_dist: dict[str, float] = {}
+        self._interaction_buffer: list[tuple] = []
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -84,6 +91,8 @@ class MobInteractions:
             (json.dumps({"x": x, "y": y}), mob_id),
         )
         self.db_conn.commit()
+        if hasattr(self.server, "update_spatial_index"):
+            self.server.update_spatial_index(mob_id, {"x": x, "y": y})
 
     def _nearest_tile(self, x: float, y: float) -> dict | None:
         cursor = self.db_conn.cursor()
@@ -97,15 +106,24 @@ class MobInteractions:
 
     def _record_interaction(self, mob_a: str, mob_b: str | None,
                              itype: str, outcome: str, details: dict | None = None):
+        self._interaction_buffer.append(
+            (mob_a, mob_b, itype, time.time(), json.dumps(details or {}), outcome)
+        )
+        if len(self._interaction_buffer) >= 100:
+            self.flush_interactions()
+
+    def flush_interactions(self):
+        if not self._interaction_buffer:
+            return
         cursor = self.db_conn.cursor()
-        cursor.execute(
+        cursor.executemany(
             """INSERT INTO interaction_history
                (mob_a_id, mob_b_id, interaction_type, timestamp, details, outcome)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (mob_a, mob_b, itype, time.time(),
-             json.dumps(details or {}), outcome),
+            self._interaction_buffer,
         )
         self.db_conn.commit()
+        self._interaction_buffer.clear()
 
     # ------------------------------------------------------------------
     # LOOK
@@ -148,14 +166,33 @@ class MobInteractions:
             })
 
         # Mobs within vision (excluding self) — include recently dead so predators can eat carcasses
-        cursor.execute(
-            "SELECT m.*, g.death FROM mobs m "
-            "LEFT JOIN mob_genes g ON m.mob_id = g.mob_id "
-            "WHERE m.mob_id != ? AND m.is_active = 1",
-            (mob_id,),
-        )
+        nearby_ids = None
+        if hasattr(self.server, "get_nearby_mob_ids"):
+            nearby_ids = self.server.get_nearby_mob_ids(ox, oy, vision)
+        if nearby_ids is not None:
+            nearby_ids.discard(mob_id)
+        if nearby_ids is None:
+            cursor.execute(
+                "SELECT m.*, g.death FROM mobs m "
+                "LEFT JOIN mob_genes g ON m.mob_id = g.mob_id "
+                "WHERE m.mob_id != ? AND m.is_active = 1",
+                (mob_id,),
+            )
+            rows = cursor.fetchall()
+        elif not nearby_ids:
+            rows = []
+        else:
+            ph = ",".join("?" for _ in nearby_ids)
+            params = tuple(nearby_ids)
+            cursor.execute(
+                f"SELECT m.*, g.death FROM mobs m "
+                f"LEFT JOIN mob_genes g ON m.mob_id = g.mob_id "
+                f"WHERE m.mob_id IN ({ph}) AND m.is_active = 1",
+                params,
+            )
+            rows = cursor.fetchall()
         visible_mobs = []
-        for row in cursor.fetchall():
+        for row in rows:
             m = dict(row)
             m_pos = m.get("position")
             if isinstance(m_pos, str):
@@ -352,9 +389,10 @@ class MobInteractions:
             "UPDATE mob_health SET health = MAX(0, health - ?) WHERE mob_id = ?",
             (damage, target_id),
         )
+        attack_cost = PREDATOR_ATTACK_ENERGY_COST if self._get_mob_row(mob_id).get("mob_type") == "predator" else ATTACK_ENERGY_COST
         cursor.execute(
             "UPDATE mob_health SET energy = MAX(0, energy - ?) WHERE mob_id = ?",
-            (ATTACK_ENERGY_COST, mob_id),
+            (attack_cost, mob_id),
         )
         self.db_conn.commit()
 
@@ -421,6 +459,8 @@ class MobInteractions:
         # Remove consumed mob
         cursor.execute("DELETE FROM mobs WHERE mob_id = ?", (target_id,))
         self.db_conn.commit()
+        if hasattr(self.server, "remove_from_spatial_index"):
+            self.server.remove_from_spatial_index(target_id)
 
         self._record_interaction(mob_id, target_id, "EAT_MOB", "SUCCESS")
 
@@ -576,17 +616,24 @@ class MobInteractions:
                 new_hunger = max(0.0, hunger - burn)
             elif new_energy < HUNGER_ENERGY_THRESHOLD:
                 # No fat and energy is low — hunger increases
-                new_hunger = min(50.0, hunger + HUNGER_PER_TICK)
+                hunger_gain = PREDATOR_HUNGER_PER_TICK if row["mob_type"] == "predator" else HUNGER_PER_TICK
+                new_hunger = min(50.0, hunger + hunger_gain)
             else:
                 # No fat but energy is sufficient — hunger holds steady
                 new_hunger = hunger
 
             # Starvation damage (spec 2.5: first tier at hunger >= 30)
             damage = 0.0
-            if new_hunger > STARVATION_TIER2:
-                damage = 3.0
-            elif new_hunger >= STARVATION_TIER1:
-                damage = 2.0
+            if row["mob_type"] == "predator":
+                if new_hunger > PREDATOR_STARVATION_TIER2:
+                    damage = 2.5
+                elif new_hunger >= PREDATOR_STARVATION_TIER1:
+                    damage = 1.5
+            else:
+                if new_hunger > STARVATION_TIER2:
+                    damage = 3.0
+                elif new_hunger >= STARVATION_TIER1:
+                    damage = 2.0
 
             new_health = max(0.0, health - damage)
 
@@ -611,12 +658,15 @@ class MobInteractions:
                     "UPDATE mob_genes SET death = ? WHERE mob_id = ?",
                     (time.time(), mob_id),
                 )
+                if hasattr(self.server, "remove_from_spatial_index"):
+                    self.server.remove_from_spatial_index(mob_id)
                 logger.info(f"Mob {mob_id} died (health={new_health}, age={new_age})")
 
         self.db_conn.commit()
+        self.flush_interactions()
 
         # Clean up stale carcasses (dead > 30s and not yet eaten)
-        stale_cutoff = time.time() - 30.0
+        stale_cutoff = time.time() - CARCASS_STALE_SECONDS
         cursor = self.db_conn.cursor()
         cursor.execute(
             "UPDATE mobs SET is_active = 0 "

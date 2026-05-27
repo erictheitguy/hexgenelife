@@ -276,6 +276,25 @@ class TestBrainRegistry(unittest.TestCase):
         self.assertEqual(result["action"], "MOVE_MOB")
         self.assertIn("targetLocation", result["payload"])
 
+    def test_predator_eat_carcass_sets_lock(self):
+        func = get_function("evaluate_eat_carcass")
+        memory = {"last_look": {"mobs": [{"mobId": "dead_1", "mob_type": "prey", "alive": False, "distance": 1.5, "position": {"x": 1, "y": 1}}]}}
+        result = func([], memory, ["action_eat_mob", "evaluate_hunt"], {"mob_type": "predator"})
+        self.assertEqual(result["next"], "action_eat_mob")
+        self.assertGreater(memory.get("carcass_lock_ticks", 0), 0)
+
+    def test_predator_breed_gate_requires_strong_reserves(self):
+        func = get_function("evaluate_breed_energy")
+        res = func([], {}, ["find_partner", "evaluate_hunt"], {
+            "mob_type": "predator",
+            "energy": 46.0,
+            "fat": 10.0,
+            "health": 95.0,
+            "life_stage": "adult",
+            "hunger": 5.0,
+        })
+        self.assertEqual(res["next"], "evaluate_hunt")
+
 
 # -----------------------------------------------------------------------
 # Prey dispersal / centering fix

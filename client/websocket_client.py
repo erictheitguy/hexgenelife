@@ -30,6 +30,7 @@ logger = logging.getLogger("ClientManager")
 
 # Define the WebSocket server address
 SERVER_URI = "ws://localhost:8765"
+LOOK_TIMEOUT_LIMIT = 3
 
 class HexGenLifeClient:
     def __init__(self, uri, client_id, mob_ids=None):
@@ -46,6 +47,15 @@ class HexGenLifeClient:
         # Error feedback tracking
         self._current_acting_mob: str | None = None
         self._last_sent_action: dict[str, dict] = {}  # {mob_id: {"type": ..., "payload": ...}}
+        # Connection/reconnect resilience state
+        self.connection_state = "DISCONNECTED"  # DISCONNECTED | CONNECTED | BACKING_OFF | REINIT
+        self.reconnect_count = 0
+        self.connect_failures = 0
+        self._force_reconnect = asyncio.Event()
+        self._look_timeout_streak: dict[str, int] = {}
+        self._stale_perception: dict[str, bool] = {}
+        self._throttle_ticks = 0
+        self._base_look_stride = max(1, int(os.environ.get("LOOK_STRIDE", "2")))
 
 
     async def connect(self):
@@ -53,9 +63,13 @@ class HexGenLifeClient:
         logger.info(f"[{self.client_id}] Attempting to connect to {self.uri}...")
         try:
             self.websocket = await websockets.connect(self.uri)
+            self.connection_state = "CONNECTED"
+            self.connect_failures = 0
             logger.info(f"[{self.client_id}] WebSocket connection established.")
             return True
         except Exception as e:
+            self.connection_state = "BACKING_OFF"
+            self.connect_failures += 1
             logger.error(f"[{self.client_id}] Connection failed: {e}")
             return False
 
@@ -112,6 +126,7 @@ class HexGenLifeClient:
                             if m_id in self.mob_objects:
                                 self.mob_objects[m_id].update_state(mob_data)
         except websockets.exceptions.ConnectionClosed:
+            self.connection_state = "DISCONNECTED"
             logger.warning(f"[{self.client_id}] Connection closed by server.")
 
     async def autonomous_loop(self):
@@ -135,8 +150,14 @@ class HexGenLifeClient:
         while True:
             await self.tick_event.wait()
             self.tick_event.clear()
+            if self.websocket and self.connection_state != "CONNECTED":
+                self.connection_state = "CONNECTED"
+            if self.connection_state != "CONNECTED":
+                continue
             tick_start = time.perf_counter()
             tick_num += 1
+            if self._throttle_ticks > 0:
+                self._throttle_ticks -= 1
 
             # Filter for alive mobs
             alive_mobs = [m_id for m_id, m in self.mob_objects.items() if not m.is_dead]
@@ -153,20 +174,37 @@ class HexGenLifeClient:
             for mob_id in alive_mobs:
                 mob = self.mob_objects[mob_id]
                 mob.reset_tick()
+                mob_hash = sum(ord(c) for c in mob_id) % 97
+                look_stride = self._base_look_stride + (1 if self._throttle_ticks > 0 else 0)
+                should_look = ((tick_num + mob_hash) % look_stride == 0) or self._stale_perception.get(mob_id, False)
 
                 # Step 1: Send LOOK command
                 t0 = time.perf_counter()
-                await self.send_message("LOOK", {"mobId": mob_id})
+                if should_look:
+                    await self.send_message("LOOK", {"mobId": mob_id})
 
                 # Wait briefly for LOOK_RESULT (with timeout)
                 look_evt = self._look_events.get(mob_id)
-                if look_evt:
+                if should_look and look_evt:
                     look_evt.clear()
                     try:
                         await asyncio.wait_for(look_evt.wait(), timeout=2.0)
+                        self._look_timeout_streak[mob_id] = 0
+                        self._stale_perception[mob_id] = False
                     except asyncio.TimeoutError:
                         logger.warning(f"[{self.client_id}] LOOK_RESULT timeout for {mob_id}")
                         mob._awaiting_look = False  # proceed with stale look data
+                        self._stale_perception[mob_id] = True
+                        streak = self._look_timeout_streak.get(mob_id, 0) + 1
+                        self._look_timeout_streak[mob_id] = streak
+                        if streak >= LOOK_TIMEOUT_LIMIT:
+                            logger.error(
+                                f"[{self.client_id}] LOOK_RESULT timeout streak "
+                                f"({streak}) for {mob_id}; forcing reconnect."
+                            )
+                            self._throttle_ticks = max(self._throttle_ticks, 4)
+                            self._force_reconnect.set()
+                            break
                 t_look_total += time.perf_counter() - t0
 
                 # Step 2: Brain thinks and produces an action
@@ -174,9 +212,16 @@ class HexGenLifeClient:
                     logger.info(f"[{self.client_id}] Mob {mob_id} died after LOOK. Skipping brain action.")
                     continue
 
-                t0 = time.perf_counter()
-                action = mob.get_tick_action()
-                t_brain_total += time.perf_counter() - t0
+                # Avoid taking aggressive actions using stale perception snapshots.
+                if self._stale_perception.get(mob_id, False):
+                    action = {
+                        "action": "MOVE_MOB",
+                        "payload": {"targetLocation": {"x": random.randint(-10, 10), "y": random.randint(-10, 10)}},
+                    }
+                else:
+                    t0 = time.perf_counter()
+                    action = mob.get_tick_action()
+                    t_brain_total += time.perf_counter() - t0
 
                 t0 = time.perf_counter()
                 if action and "action" in action:
@@ -203,7 +248,8 @@ class HexGenLifeClient:
             logger.debug(
                 f"[{self.client_id}][TICK {tick_num}] total={t_total*1000:.1f}ms  "
                 f"look={t_look_total*1000:.1f}ms  brain={t_brain_total*1000:.1f}ms  "
-                f"action_send={t_action_total*1000:.1f}ms  mobs={len(alive_mobs)}"
+                f"action_send={t_action_total*1000:.1f}ms  mobs={len(alive_mobs)}  "
+                f"reconnects={self.reconnect_count}"
             )
 
 
@@ -219,6 +265,7 @@ class HexGenLifeClient:
                 logger.debug(f"[{self.client_id}] Sent message type: {message_type}")
             except Exception as e:
                 logger.error(f"[{self.client_id}] Failed to send message {message_type}: {e}")
+                self._force_reconnect.set()
         else:
             logger.warning(f"[{self.client_id}] WebSocket is not connected. Message type: {message_type} not sent.")
 
@@ -251,6 +298,9 @@ class HexGenLifeClient:
         error_code = payload.get("errorCode", "UNKNOWN")
         error_msg = payload.get("errorMessage", "")
         mob_id = self._extract_mob_id_from_error(error_msg) or self._current_acting_mob
+        if error_code in {"SERVER_BUSY", "ACTION_LIMIT_EXCEEDED"}:
+            self._throttle_ticks = max(self._throttle_ticks, 6)
+            logger.warning(f"[{self.client_id}] Applying client throttle due to {error_code}.")
         if mob_id and mob_id in self.mob_objects:
             last_action = self._last_sent_action.get(mob_id)
             self.mob_objects[mob_id].record_error(error_code, last_action)
@@ -274,19 +324,27 @@ class HexGenLifeClient:
             if await self.connect():
                 # Initial request to ensure mob is created and state is synced
                 delay = base_delay
+                self.connection_state = "REINIT"
+                self._force_reconnect.clear()
+                self._look_timeout_streak.clear()
+                self._stale_perception.clear()
                 await self.send_request_world_state()
                 await self.send_request_brain_functions()
+                self.connection_state = "CONNECTED"
                 
                 # Listen blocks until connection drops or all mobs die
                 listen_task = asyncio.create_task(self.listen())
                 death_wait_task = asyncio.create_task(self.all_mobs_dead_event.wait())
+                reconnect_wait_task = asyncio.create_task(self._force_reconnect.wait())
                 
                 # Wait for either connection to close or all mobs to die
                 done, pending = await asyncio.wait(
-                    [listen_task, death_wait_task],
+                    [listen_task, death_wait_task, reconnect_wait_task],
                     return_when=asyncio.FIRST_COMPLETED
                 )
 
+                for task in pending:
+                    task.cancel()
                 
                 if self.all_mobs_dead_event.is_set():
                     logger.info(f"[{self.client_id}] Termination signal received: All mobs are dead.")
@@ -296,12 +354,28 @@ class HexGenLifeClient:
                     break
                 else:
                     # Connection closed unexpectedly
-                    logger.warning(f"[{self.client_id}] Connection lost. Reconnecting in {delay} seconds...")
-                    await asyncio.sleep(delay)
+                    self.reconnect_count += 1
+                    self.connection_state = "BACKING_OFF"
+                    if not listen_task.done():
+                        listen_task.cancel()
+                    if self.websocket:
+                        try:
+                            await self.websocket.close()
+                        except Exception:
+                            pass
+                        self.websocket = None
+                    jitter = random.uniform(0.0, 0.25 * delay)
+                    wait_for = min(max_delay, delay + jitter)
+                    logger.warning(
+                        f"[{self.client_id}] Connection lost. Reconnecting in {wait_for:.1f} seconds..."
+                    )
+                    await asyncio.sleep(wait_for)
                     delay = min(max_delay, delay * backoff_factor)
             else:
-                logger.info(f"[{self.client_id}] Failed to connect. Retrying in {delay} seconds...")
-                await asyncio.sleep(delay)
+                jitter = random.uniform(0.0, 0.25 * delay)
+                wait_for = min(max_delay, delay + jitter)
+                logger.info(f"[{self.client_id}] Failed to connect. Retrying in {wait_for:.1f} seconds...")
+                await asyncio.sleep(wait_for)
                 delay = min(max_delay, delay * backoff_factor)
 
         # Cleanup

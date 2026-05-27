@@ -75,11 +75,23 @@ class MobManager:
             (mob_id, 0.0, 0.0, 100.0, 0.0,
              h["energy"], "baby", h["birth_tick"], h["max_age"]),
         )
+        if mob_type == "predator":
+            cursor.execute(
+                "UPDATE mob_health SET fat = 15.0, energy = 55.0 WHERE mob_id = ?",
+                (mob_id,),
+            )
 
         # mob_physical
         phys = dict(DEFAULT_MOB_PHYSICAL)
         if mob_type == "predator":
-            phys.update({"diet_type": 1.0, "attack_power": 3.0, "speed": 1.5, "vision": 25.0, "aging_rate": 0.3})
+            phys.update({
+                "diet_type": 1.0,
+                "attack_power": 3.2,
+                "speed": 1.6,
+                "vision": 26.0,
+                "aging_rate": 0.3,
+                "metabolism_resting": 0.35,
+            })
         if physical_overrides:
             phys.update(physical_overrides)
 

@@ -5,11 +5,13 @@ Run from the project root:
     python -m pytest tests/test_server.py -v
 """
 import asyncio
+import contextlib
 import json
 import os
 import sqlite3
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
+import server.server as server_mod
 
 from server.server import GameServer
 
@@ -245,6 +247,39 @@ class TestAsyncHandlers(unittest.IsolatedAsyncioTestCase):
         payload = sent["payload"]
         self.assertIn("mobs", payload)
         self.assertIn("tiles", payload)
+
+    async def test_ws_handler_enqueues_into_inbound_queue(self):
+        """Incoming validated commands should be queued into inbound_queue."""
+        self.server._ensure_client_mob("qclient")
+        msg = json.dumps({"type": "LOOK", "payload": {"mobId": "mob_qclient", "clientId": "qclient"}})
+
+        async def _messages():
+            yield msg
+
+        mock_ws = AsyncMock()
+        mock_ws.__aiter__ = lambda _: _messages().__aiter__()
+        await self.server.ws_handler(mock_ws)
+        self.assertGreaterEqual(self.server.inbound_queue.qsize(), 1)
+
+    async def test_tick_loop_respects_look_budget(self):
+        """LOOK processing should be capped per simulation tick."""
+        self.server._ensure_client_mob("looker")
+        ws = AsyncMock()
+        for _ in range(4):
+            await self.server.inbound_queue.put({
+                "websocket": ws,
+                "command_type": "LOOK",
+                "payload": {"mobId": "mob_looker", "clientId": "looker"},
+            })
+        self.server.tick_rate = 0.01
+        with patch.object(server_mod, "MAX_LOOKS_PER_SIM_TICK", 1), patch.object(server_mod, "MAX_ACTIONS_PER_SIM_TICK", 2):
+            task = asyncio.create_task(self.server._tick_loop())
+            await asyncio.sleep(0.04)
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        self.assertLessEqual(self.server._last_tick_stats.get("processed_look", 99), 1)
+        self.assertGreaterEqual(self.server._last_tick_stats.get("deferred", 0), 1)
 
 
 class TestDynamicWorldExpansion(unittest.IsolatedAsyncioTestCase):

@@ -19,6 +19,7 @@ import logging
 logger = logging.getLogger("BrainRegistry")
 
 ATTACK_RANGE = 3.0
+CARCASS_LOCK_TICKS = 4
 # Herd instinct is suppressed when the mob's local tile grass falls below this value.
 # Prevents cluster pull from overriding the need to disperse when the shared area is depleted.
 GRASS_HERD_SUPPRESS_THRESHOLD = 2.0
@@ -323,6 +324,12 @@ def evaluate_attack_target(matrix, memory, outputs, mob_state):
     visible_mobs = look_data.get("mobs", [])
     mob_type = mob_state.get("mob_type", "predator")
 
+    # If we have a recent carcass target, don't thrash back into hunt routing.
+    if memory.get("carcass_lock_ticks", 0) > 0 and memory.get("eat_target"):
+        memory["carcass_lock_ticks"] = memory.get("carcass_lock_ticks", 0) - 1
+        next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
+        return {"matrix": matrix, "next": next_node}
+
     targets = [m for m in visible_mobs
                if m.get("mob_type") == "prey"
                and m.get("alive", True)
@@ -376,9 +383,12 @@ def evaluate_eat_carcass(matrix, memory, outputs, mob_state):
     if dead_prey:
         closest = min(dead_prey, key=lambda m: m.get("distance", 999))
         memory["eat_target"] = closest
+        memory["carcass_lock_ticks"] = CARCASS_LOCK_TICKS
+        memory["last_prey_pos"] = dict(closest["position"])
         next_node = outputs[0] if outputs else None
     else:
         memory.pop("eat_target", None)
+        memory["carcass_lock_ticks"] = 0
         next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
 
     return {"matrix": matrix, "next": next_node}
@@ -391,13 +401,16 @@ def action_eat_mob(matrix, memory, outputs, mob_state):
     if not target:
         return evaluate_movement(matrix, memory, outputs, mob_state)
 
-    if target.get("distance", 999) > ATTACK_RANGE:
+    # Give a little tolerance to improve consume conversion after a kill.
+    eat_range = ATTACK_RANGE + 1.0
+    if target.get("distance", 999) > eat_range:
         tx, ty = target["position"]["x"], target["position"]["y"]
         return {"action": "MOVE_MOB", "payload": {
             "targetLocation": {"x": int(tx), "y": int(ty)}
         }}
 
     memory.pop("eat_target", None)
+    memory["carcass_lock_ticks"] = 0
     return {"action": "EAT_MOB", "payload": {"targetId": target["mobId"]}}
 
 
@@ -419,9 +432,16 @@ def evaluate_breed_energy(matrix, memory, outputs, mob_state):
     life_stage = mob_state.get("life_stage", "")
     health = mob_state.get("health", 100)
 
-    # Require energy >= 45 (above server MIN_BREED_ENERGY=40; energy caps at 50 from eating)
-    # Also require health >= 80 so injured mobs don't breed
-    if energy >= 45 and life_stage == "adult" and health >= 80:
+    mob_type = mob_state.get("mob_type", "prey")
+    fat = mob_state.get("fat", 0)
+    # Predators need stronger reserves and recent feeding before breeding.
+    if mob_type == "predator":
+        ate_recently = bool(memory.get("eat_target")) or mob_state.get("hunger", 0) < 10
+        can_breed = energy >= 48 and fat >= 25 and health >= 90 and life_stage == "adult" and ate_recently
+    else:
+        can_breed = energy >= 45 and health >= 80 and life_stage == "adult"
+
+    if can_breed:
         next_node = outputs[0] if outputs else None
     else:
         next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
