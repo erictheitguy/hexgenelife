@@ -353,6 +353,39 @@ class TestAsyncHandlers(unittest.IsolatedAsyncioTestCase):
         mock_err.assert_awaited_once()
         self.assertEqual(mock_err.await_args.args[1], "ACTION_LIMIT_EXCEEDED")
 
+    def test_load_tier_enters_degraded(self):
+        """slow_tick_streak crossing DEGRADED_SLOW_TICK_STREAK enters degraded."""
+        self.server._slow_tick_streak = server_mod.DEGRADED_SLOW_TICK_STREAK
+        self.server._update_load_tier(tick_num=10)
+        self.assertTrue(self.server._degraded_mode)
+        self.assertFalse(self.server._deeply_degraded_mode)
+
+    def test_load_tier_enters_deeply_degraded(self):
+        """Crossing DEEPLY_DEGRADED_SLOW_TICK_STREAK enters the deeper tier."""
+        self.server._slow_tick_streak = server_mod.DEEPLY_DEGRADED_SLOW_TICK_STREAK
+        self.server._update_load_tier(tick_num=10)
+        self.assertTrue(self.server._degraded_mode)
+        self.assertTrue(self.server._deeply_degraded_mode)
+
+    def test_load_tier_drops_back_to_degraded(self):
+        """Streak falling below deeply-degraded threshold returns to degraded."""
+        self.server._degraded_mode = True
+        self.server._deeply_degraded_mode = True
+        self.server._slow_tick_streak = server_mod.DEGRADED_SLOW_TICK_STREAK
+        self.server._update_load_tier(tick_num=10)
+        self.assertTrue(self.server._degraded_mode)
+        self.assertFalse(self.server._deeply_degraded_mode)
+
+    def test_load_tier_exits_to_normal(self):
+        """Zero streak + low deferred drops both flags."""
+        self.server._degraded_mode = True
+        self.server._deeply_degraded_mode = True
+        self.server._slow_tick_streak = 0
+        self.server._deferred_actions = 0
+        self.server._update_load_tier(tick_num=10)
+        self.assertFalse(self.server._degraded_mode)
+        self.assertFalse(self.server._deeply_degraded_mode)
+
     async def test_cap_overflow_fresh_deferral_processed(self):
         """A deferred action within max-age must move into _pending_actions for processing."""
         mock_ws = AsyncMock()

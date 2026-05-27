@@ -38,14 +38,47 @@ logging.basicConfig(
 logger = logging.getLogger("Server")
 
 _DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "game_state.db")
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(f"Invalid {name}={raw!r}; using default {default}")
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(f"Invalid {name}={raw!r}; using default {default}")
+        return default
+
+
 MAX_ACTIONS_PER_MOB_PER_TICK = 2
 MAX_QUEUE_SIZE = 5000
 MAX_ACTIONS_PER_SIM_TICK = 600
 MAX_LOOKS_PER_SIM_TICK = 240
-SLOW_TICK_WARN_MS = 800.0
-DEGRADED_SLOW_TICK_STREAK = 4
-DEGRADED_ACTION_BUDGET_SCALE = 0.75
-DEGRADED_LOOK_BUDGET_SCALE = 0.6
+SLOW_TICK_WARN_MS = _env_float("SLOW_TICK_WARN_MS", 800.0)
+# Degraded tier (mild): kicks in at this many consecutive slow ticks and
+# scales the per-sim-tick budgets accordingly. Defaults preserved from
+# the pre-config implementation; env vars allow heavy-run tuning.
+DEGRADED_SLOW_TICK_STREAK = _env_int("DEGRADED_SLOW_TICK_STREAK", 4)
+DEGRADED_ACTION_BUDGET_SCALE = _env_float("DEGRADED_ACTION_BUDGET_SCALE", 0.75)
+DEGRADED_LOOK_BUDGET_SCALE = _env_float("DEGRADED_LOOK_BUDGET_SCALE", 0.6)
+# Deeply-degraded tier: heavier throttle applied once the slow-tick streak
+# blows past the mild threshold. Disabled by raising the streak above the
+# practical max.
+DEEPLY_DEGRADED_SLOW_TICK_STREAK = _env_int("DEEPLY_DEGRADED_SLOW_TICK_STREAK", 8)
+DEEPLY_DEGRADED_ACTION_BUDGET_SCALE = _env_float("DEEPLY_DEGRADED_ACTION_BUDGET_SCALE", 0.5)
+DEEPLY_DEGRADED_LOOK_BUDGET_SCALE = _env_float("DEEPLY_DEGRADED_LOOK_BUDGET_SCALE", 0.35)
 # Per-mob cap overflow is deferred (not rejected) for up to this many ticks
 # before age-eviction emits ACTION_LIMIT_EXCEEDED. Scales with load tier.
 MOB_CAP_DEFER_MAX_AGE = 2
@@ -62,6 +95,7 @@ class GameServer:
         self._pending_actions = deque()
         self._deferred_actions = 0
         self._degraded_mode = False
+        self._deeply_degraded_mode = False
         self._slow_tick_streak = 0
         self._queue_overflow_drops = 0
         self._event_buffer = {
@@ -313,6 +347,39 @@ class GameServer:
                 self.db_conn.commit()
                 self.remove_from_spatial_index(mob_id)
 
+    def _update_load_tier(self, tick_num: int) -> None:
+        """Recompute degraded/deeply-degraded mode from the slow-tick streak.
+
+        Transitions are logged. Hysteresis: we only fully exit degraded mode
+        once the streak hits zero AND deferred actions drop below 50.
+        """
+        if self._slow_tick_streak >= DEEPLY_DEGRADED_SLOW_TICK_STREAK:
+            if not self._deeply_degraded_mode:
+                self._deeply_degraded_mode = True
+                self._degraded_mode = True
+                logger.warning(
+                    f"[TICK {tick_num}] Entering DEEPLY-degraded mode after "
+                    f"{self._slow_tick_streak} slow ticks."
+                )
+        elif self._slow_tick_streak >= DEGRADED_SLOW_TICK_STREAK:
+            if not self._degraded_mode:
+                self._degraded_mode = True
+                logger.warning(
+                    f"[TICK {tick_num}] Entering degraded mode after "
+                    f"{self._slow_tick_streak} slow ticks."
+                )
+            if self._deeply_degraded_mode:
+                self._deeply_degraded_mode = False
+                logger.info(
+                    f"[TICK {tick_num}] Exiting deeply-degraded mode (streak="
+                    f"{self._slow_tick_streak})."
+                )
+        elif self._slow_tick_streak == 0 and self._deferred_actions < 50:
+            if self._degraded_mode or self._deeply_degraded_mode:
+                self._degraded_mode = False
+                self._deeply_degraded_mode = False
+                logger.info(f"[TICK {tick_num}] Exiting degraded mode.")
+
     async def _drain_cap_overflow(self, tick_num: int) -> None:
         """Move cap-deferred actions into _pending_actions, age-evicting stale ones.
 
@@ -369,7 +436,10 @@ class GameServer:
             self._coalesce_events = True
             action_budget = MAX_ACTIONS_PER_SIM_TICK
             look_budget = MAX_LOOKS_PER_SIM_TICK
-            if self._degraded_mode:
+            if self._deeply_degraded_mode:
+                action_budget = max(50, int(action_budget * DEEPLY_DEGRADED_ACTION_BUDGET_SCALE))
+                look_budget = max(20, int(look_budget * DEEPLY_DEGRADED_LOOK_BUDGET_SCALE))
+            elif self._degraded_mode:
                 action_budget = max(50, int(action_budget * DEGRADED_ACTION_BUDGET_SCALE))
                 look_budget = max(20, int(look_budget * DEGRADED_LOOK_BUDGET_SCALE))
 
@@ -508,6 +578,8 @@ class GameServer:
                 "cap_overflow_depth": len(self._cap_overflow_queue),
                 "deferred_total": self._deferred_actions,
                 "degraded": self._degraded_mode,
+                "load_tier": (2 if self._deeply_degraded_mode
+                              else 1 if self._degraded_mode else 0),
             }
             logger.info(f"[TICK-METRICS] {json.dumps(metrics_line, separators=(',', ':'))}")
             if t_total * 1000.0 > SLOW_TICK_WARN_MS:
@@ -521,14 +593,7 @@ class GameServer:
             else:
                 self._slow_tick_streak = max(0, self._slow_tick_streak - 1)
 
-            if not self._degraded_mode and self._slow_tick_streak >= DEGRADED_SLOW_TICK_STREAK:
-                self._degraded_mode = True
-                logger.warning(
-                    f"[TICK {tick_num}] Entering degraded mode after {self._slow_tick_streak} slow ticks."
-                )
-            elif self._degraded_mode and self._slow_tick_streak == 0 and self._deferred_actions < 50:
-                self._degraded_mode = False
-                logger.info(f"[TICK {tick_num}] Exiting degraded mode.")
+            self._update_load_tier(tick_num)
 
     async def _flush_pending_child_spawns(self):
         """Launch a client process for every child mob queued since the last tick."""

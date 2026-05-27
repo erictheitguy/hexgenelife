@@ -46,6 +46,7 @@ def summarize(ticks: list[dict]) -> dict:
     worst_tick = None
     worst_tick_rej = 0
     degraded_ticks = 0
+    deeply_degraded_ticks = 0
 
     for t in ticks:
         accepted.update(t.get("accepted") or {})
@@ -57,8 +58,11 @@ def summarize(ticks: list[dict]) -> dict:
             rej_by_client[client_id] += n
         for mob_id, n in (t.get("top_rej_mobs") or []):
             rej_by_mob[mob_id] += n
-        if t.get("degraded"):
+        tier = t.get("load_tier", 1 if t.get("degraded") else 0)
+        if tier >= 1:
             degraded_ticks += 1
+        if tier >= 2:
+            deeply_degraded_ticks += 1
         tick_rej_total = sum((t.get("rej_ws_cap") or {}).values())
         if tick_rej_total > 0:
             ticks_with_rej += 1
@@ -70,6 +74,7 @@ def summarize(ticks: list[dict]) -> dict:
         "tick_count": len(ticks),
         "ticks_with_rejections": ticks_with_rej,
         "degraded_ticks": degraded_ticks,
+        "deeply_degraded_ticks": deeply_degraded_ticks,
         "worst_tick": worst_tick,
         "worst_tick_rejections": worst_tick_rej,
         "total_accepted": dict(accepted),
@@ -92,6 +97,7 @@ def print_summary(s: dict) -> None:
     print(f"Ticks analyzed:           {s['tick_count']}")
     print(f"Ticks with rejections:    {s['ticks_with_rejections']}")
     print(f"Ticks in degraded mode:   {s['degraded_ticks']}")
+    print(f"Ticks in deeply-degraded: {s['deeply_degraded_ticks']}")
     print(f"Worst tick:               #{s['worst_tick']} ({s['worst_tick_rejections']} rejections)")
     print()
     print("Accepted actions (total, by type):")
