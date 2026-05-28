@@ -153,6 +153,16 @@ class Mob:
         """Write a server error and its action context into brain memory for next tick."""
         self.brain.memory["last_error"] = {"code": error_code, "action": action}
         action_type = action.get("type") if action else None
+
+        # Per-target breed cooldown: skip this partner for a few ticks so we
+        # don't immediately re-pick them and burn another BREED_FAILED.
+        if error_code == "BREED_FAILED" and action:
+            target_id = (action.get("payload") or {}).get("targetId")
+            if target_id:
+                from client.brain_registry import BREED_FAIL_COOLDOWN_TICKS
+                cooldowns = self.brain.memory.setdefault("breed_cooldown", {})
+                cooldowns[target_id] = BREED_FAIL_COOLDOWN_TICKS
+
         self.logger.warning(f"Action error recorded: {error_code} (action={action_type})")
 
     def set_decision_tree(self, tree: dict):

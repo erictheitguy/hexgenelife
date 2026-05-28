@@ -182,10 +182,13 @@ class MobInteractions:
             cursor.execute(
                 "SELECT m.*, g.death, "
                 "       COALESCE(p.camouflage, 0.5) AS camouflage, "
-                "       COALESCE(p.size, 1.0) AS size "
+                "       COALESCE(p.size, 1.0) AS size, "
+                "       COALESCE(h.life_stage, 'adult') AS life_stage, "
+                "       COALESCE(h.energy, 0.0) AS energy "
                 "FROM mobs m "
                 "LEFT JOIN mob_genes g ON m.mob_id = g.mob_id "
                 "LEFT JOIN mob_physical p ON m.mob_id = p.mob_id "
+                "LEFT JOIN mob_health h ON m.mob_id = h.mob_id "
                 "WHERE m.mob_id != ? AND m.is_active = 1",
                 (mob_id,),
             )
@@ -198,10 +201,13 @@ class MobInteractions:
             cursor.execute(
                 f"SELECT m.*, g.death, "
                 f"       COALESCE(p.camouflage, 0.5) AS camouflage, "
-                f"       COALESCE(p.size, 1.0) AS size "
+                f"       COALESCE(p.size, 1.0) AS size, "
+                f"       COALESCE(h.life_stage, 'adult') AS life_stage, "
+                f"       COALESCE(h.energy, 0.0) AS energy "
                 f"FROM mobs m "
                 f"LEFT JOIN mob_genes g ON m.mob_id = g.mob_id "
                 f"LEFT JOIN mob_physical p ON m.mob_id = p.mob_id "
+                f"LEFT JOIN mob_health h ON m.mob_id = h.mob_id "
                 f"WHERE m.mob_id IN ({ph}) AND m.is_active = 1",
                 params,
             )
@@ -241,6 +247,8 @@ class MobInteractions:
                 "position": m_pos,
                 "distance": dist,
                 "alive": not is_dead,
+                "life_stage": m.get("life_stage") or "adult",
+                "energy": m.get("energy", 0.0),
             })
 
         # mob_self

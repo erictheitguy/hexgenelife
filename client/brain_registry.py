@@ -20,6 +20,24 @@ logger = logging.getLogger("BrainRegistry")
 
 ATTACK_RANGE = 3.0
 CARCASS_LOCK_TICKS = 4
+# Mirror of server.mob_interactions.MIN_BREED_ENERGY — if these drift,
+# the brain may pick partners the server rejects with BREED_FAILED.
+MIN_BREED_ENERGY = 40.0
+# Ticks a partner is skipped after a BREED_FAILED against them.
+BREED_FAIL_COOLDOWN_TICKS = 5
+# Ticks a predator stays committed to a specific attacked prey before
+# reconsidering — refreshed on each ATTACK_MOB emitted against the same target.
+PREDATOR_FOCUS_TICKS = 12
+# Hard cap on consecutive attacks against the same focused prey before the
+# predator gives up and lets evaluate_attack_target re-pick. Prevents a single
+# elusive prey from exhausting the predator while others are nearby.
+PREDATOR_FOCUS_MAX_ATTACKS = 8
+# A different visible prey must be at least this much closer than the focused
+# prey before the predator switches targets.
+PREDATOR_SWITCH_RATIO = 1.5
+# When a predator has no visible prey and no last_prey_pos memory, distances
+# beyond this from origin trigger a homeward wander bias instead of random.
+PREDATOR_EDGE_RADIUS = 25.0
 # Herd instinct is suppressed when the mob's local tile grass falls below this value.
 # Prevents cluster pull from overriding the need to disperse when the shared area is depleted.
 GRASS_HERD_SUPPRESS_THRESHOLD = 2.0
@@ -215,6 +233,13 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
     # Predators: skip grass seeking; pursue last known prey position instead
     if mob_type == "predator":
         gvx, gvy = 0.0, 0.0
+        # If we have a live focus_target but lost last_prey_pos (e.g. cleared
+        # by reaching the spot), bias movement back toward the last known
+        # focus position so the predator continues searching for that prey.
+        focus = memory.get("focus_target")
+        if focus and focus.get("ticks_remaining", 0) > 0 and not memory.get("last_prey_pos"):
+            memory["last_prey_pos"] = dict(focus["position"])
+            memory["pursue_steps"] = max(memory.get("pursue_steps", 0), 20)
         last_prey = memory.get("last_prey_pos")
         pursue_steps = memory.get("pursue_steps", 0)
         if last_prey and pursue_steps > 0:
@@ -243,6 +268,14 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
                 gvx, gvy = dx/dist, dy/dist
             else:
                 memory.pop("last_prey_pos", None)
+        else:
+            # No prey signal at all — if we've wandered to the map edge, bias
+            # back toward origin instead of doubling down on random direction.
+            # Origin is the spawn region, where prey are likely to be.
+            dist_from_origin = math.sqrt(cx*cx + cy*cy)
+            if dist_from_origin > PREDATOR_EDGE_RADIUS:
+                d = dist_from_origin or 1
+                gvx, gvy = -cx/d, -cy/d
 
     # --- Blend vectors: grass weighted by (1-herd), herd weighted by herd ---
     # If no usable grass and herd is suppressed, fall back to persistent wander
@@ -280,25 +313,32 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
 
 @register("action_eat")
 def action_eat(matrix, memory, outputs, mob_state):
-    """Emit EAT_GRASS if standing on a grass tile, otherwise move to the nearest grass tile center."""
+    """Emit EAT_GRASS if the server-nearest tile has grass; otherwise move to a grass tile.
+
+    The server's EAT_GRASS handler picks the single tile whose center is
+    closest to the mob's position and rejects with NO_GRASS if its grass is 0.
+    Mirroring that predicate here prevents the brain from emitting EAT_GRASS
+    when a closer (but bare) tile would be chosen server-side.
+    """
     look_data = memory.get("last_look", {})
     tiles = look_data.get("tiles", [])
-    grass_tiles = [t for t in tiles if t.get("grass", 0) > 0]
 
+    # No LOOK data — fall through to a speculative EAT.
+    if not tiles:
+        return {"action": "EAT_GRASS", "payload": {}}
+
+    server_nearest = min(tiles, key=lambda t: t.get("distance", 999))
+    if server_nearest.get("grass", 0) > 0:
+        return {"action": "EAT_GRASS", "payload": {}}
+
+    grass_tiles = [t for t in tiles if t.get("grass", 0) > 0]
     if not grass_tiles:
-        # No grass visible — wander to find some
         return evaluate_movement(matrix, memory, outputs, mob_state)
 
-    nearest = min(grass_tiles, key=lambda t: t.get("distance", 999))
-
-    # Move toward the grass tile center until within inradius (4.33).
-    # This ensures the mob is standing on the grass tile before eating.
-    if nearest.get("distance", 999) > 4.33:
-        return {"action": "MOVE_MOB", "payload": {
-            "targetLocation": {"x": int(nearest["centerX"]), "y": int(nearest["centerY"])}
-        }}
-
-    return {"action": "EAT_GRASS", "payload": {}}
+    nearest_grass = min(grass_tiles, key=lambda t: t.get("distance", 999))
+    return {"action": "MOVE_MOB", "payload": {
+        "targetLocation": {"x": int(nearest_grass["centerX"]), "y": int(nearest_grass["centerY"])}
+    }}
 
 
 @register("action_move")
@@ -319,10 +359,26 @@ def evaluate_attack_target(matrix, memory, outputs, mob_state):
 
     If prey is visible and close enough → attack (first output).
     Otherwise → continue (second output).
+
+    Honors memory["focus_target"] set by action_attack: a previously-attacked
+    prey is preferred over closer alternatives unless another prey is at least
+    PREDATOR_SWITCH_RATIO closer.  Focus expires after PREDATOR_FOCUS_TICKS
+    without a refresh, or PREDATOR_FOCUS_MAX_ATTACKS consecutive attacks
+    without a kill.  When the focused prey is out of vision but focus is still
+    live, last_prey_pos is repopulated so evaluate_movement continues pursuit.
     """
     look_data = memory.get("last_look", {})
     visible_mobs = look_data.get("mobs", [])
-    mob_type = mob_state.get("mob_type", "predator")
+
+    # Decay focus each tick. action_attack refreshes ticks_remaining whenever
+    # an attack is actually emitted against the focused mob.
+    focus = memory.get("focus_target")
+    if focus:
+        focus["ticks_remaining"] = focus.get("ticks_remaining", 0) - 1
+        if (focus["ticks_remaining"] <= 0
+                or focus.get("consecutive_attacks", 0) >= PREDATOR_FOCUS_MAX_ATTACKS):
+            memory.pop("focus_target", None)
+            focus = None
 
     # If we have a recent carcass target, don't thrash back into hunt routing.
     if memory.get("carcass_lock_ticks", 0) > 0 and memory.get("eat_target"):
@@ -335,18 +391,41 @@ def evaluate_attack_target(matrix, memory, outputs, mob_state):
                and m.get("alive", True)
                and m.get("distance", 999) < mob_state.get("vision", 15)]
 
-    if targets:
-        closest = min(targets, key=lambda m: m.get("distance", 999))
-        memory["attack_target"] = closest
-        memory["target_in_range"] = closest.get("distance", 999) <= ATTACK_RANGE
-        memory["last_prey_pos"] = dict(closest["position"])
-        memory["pursue_steps"] = 80
-        next_node = outputs[0] if outputs else None
-    else:
+    if not targets:
         memory.pop("attack_target", None)
         memory.pop("target_in_range", None)
+        # Focused prey left vision but commitment is still live — keep pursuit
+        # vector pointed at the last known position so evaluate_movement can
+        # follow rather than reverting to random wander.
+        if focus:
+            memory["last_prey_pos"] = dict(focus["position"])
+            memory["pursue_steps"] = max(memory.get("pursue_steps", 0), 20)
         next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
+        return {"matrix": matrix, "next": next_node}
 
+    chosen = None
+    if focus:
+        focused = next((m for m in targets if m.get("mobId") == focus["mobId"]), None)
+        if focused:
+            closest = min(targets, key=lambda m: m.get("distance", 999))
+            focused_dist = focused.get("distance", 999)
+            closest_dist = closest.get("distance", 999)
+            # Stick with the focused prey unless another is clearly closer.
+            if closest is focused or closest_dist * PREDATOR_SWITCH_RATIO >= focused_dist:
+                chosen = focused
+            else:
+                # A much closer prey came into view — abandon focus and switch.
+                memory.pop("focus_target", None)
+                focus = None
+                chosen = closest
+    if chosen is None:
+        chosen = min(targets, key=lambda m: m.get("distance", 999))
+
+    memory["attack_target"] = chosen
+    memory["target_in_range"] = chosen.get("distance", 999) <= ATTACK_RANGE
+    memory["last_prey_pos"] = dict(chosen["position"])
+    memory["pursue_steps"] = 80
+    next_node = outputs[0] if outputs else None
     return {"matrix": matrix, "next": next_node}
 
 
@@ -357,12 +436,31 @@ def action_attack(matrix, memory, outputs, mob_state):
     Server does not enforce attack range, so always attack — prey dies in
     fewer ticks regardless of distance.  evaluate_eat_carcass handles
     moving to the resulting carcass.
+
+    Also refreshes memory["focus_target"] so the predator stays committed to
+    this prey through brief vision loss but bails after too many attacks
+    without a kill (anti-exhaustion).
     """
     target = memory.get("attack_target")
     if not target:
         return evaluate_movement(matrix, memory, outputs, mob_state)
 
-    return {"action": "ATTACK_MOB", "payload": {"targetId": target["mobId"]}}
+    target_id = target["mobId"]
+    target_pos = dict(target.get("position", {"x": 0, "y": 0}))
+    focus = memory.get("focus_target")
+    if focus and focus.get("mobId") == target_id:
+        focus["ticks_remaining"] = PREDATOR_FOCUS_TICKS
+        focus["consecutive_attacks"] = focus.get("consecutive_attacks", 0) + 1
+        focus["position"] = target_pos
+    else:
+        memory["focus_target"] = {
+            "mobId": target_id,
+            "position": target_pos,
+            "ticks_remaining": PREDATOR_FOCUS_TICKS,
+            "consecutive_attacks": 1,
+        }
+
+    return {"action": "ATTACK_MOB", "payload": {"targetId": target_id}}
 
 
 @register("evaluate_eat_carcass")
@@ -468,7 +566,20 @@ def find_partner(matrix, memory, outputs, mob_state):
     last_look = memory.get("last_look", {})
     mobs = last_look.get("mobs", []) if isinstance(last_look, dict) else []
 
-    # 2.4 — filter candidates
+    # Tick down per-target breed cooldown (set by Mob.record_error on BREED_FAILED).
+    breed_cooldown = memory.get("breed_cooldown")
+    if breed_cooldown:
+        for k in list(breed_cooldown):
+            breed_cooldown[k] -= 1
+            if breed_cooldown[k] <= 0:
+                breed_cooldown.pop(k, None)
+        if not breed_cooldown:
+            memory.pop("breed_cooldown", None)
+    cooldown_ids = set(breed_cooldown or ())
+
+    # 2.4 — filter candidates. Missing life_stage/energy fields default to
+    # "allow" so unit tests that omit them still pass; in production LOOK_RESULT
+    # always carries both fields and the gate becomes strict.
     my_type = mob_state.get("mob_type", "")
     vision = mob_state.get("vision", 10.0)
     candidates = [
@@ -476,6 +587,9 @@ def find_partner(matrix, memory, outputs, mob_state):
         if m.get("mob_type") == my_type
         and m.get("alive") is True
         and m.get("distance", float("inf")) <= vision
+        and m.get("mobId") not in cooldown_ids
+        and m.get("life_stage", "adult") == "adult"
+        and m.get("energy", float("inf")) >= MIN_BREED_ENERGY
     ]
 
     # 2.5 — no candidates
