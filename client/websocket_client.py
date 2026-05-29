@@ -14,9 +14,14 @@ import os
 LOGS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-def _configure_logging(level_name: str = "DEBUG"):
+def _configure_logging(level_name: str = "INFO"):
+    from logging.handlers import RotatingFileHandler
     level = getattr(logging, level_name.upper(), logging.INFO)
-    handlers = [logging.FileHandler(os.path.join(LOGS_DIR, "client.log"))]
+    handlers = [RotatingFileHandler(
+        os.path.join(LOGS_DIR, "client.log"),
+        maxBytes=10 * 1024 * 1024,
+        backupCount=3,
+    )]
     if sys.stdout.isatty():
         handlers.append(logging.StreamHandler())
     logging.basicConfig(
@@ -24,8 +29,9 @@ def _configure_logging(level_name: str = "DEBUG"):
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=handlers,
     )
+    logging.getLogger("websockets").setLevel(logging.WARNING)
 
-_configure_logging(os.environ.get("LOG_LEVEL", "DEBUG"))
+_configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("ClientManager")
 
 # Define the WebSocket server address

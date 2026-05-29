@@ -26,8 +26,13 @@ from server.environment.rain_process import RainProcess
 
 LOGS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
-_log_level = getattr(logging, os.environ.get("LOG_LEVEL", "DEBUG").upper(), logging.INFO)
-_log_handlers = [logging.FileHandler(os.path.join(LOGS_DIR, "server.log"))]
+from logging.handlers import RotatingFileHandler
+_log_level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
+_log_handlers = [RotatingFileHandler(
+    os.path.join(LOGS_DIR, "server.log"),
+    maxBytes=10 * 1024 * 1024,
+    backupCount=3,
+)]
 if sys.stdout.isatty():
     _log_handlers.append(logging.StreamHandler())
 logging.basicConfig(
@@ -35,6 +40,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=_log_handlers,
 )
+logging.getLogger("websockets").setLevel(logging.WARNING)
 logger = logging.getLogger("Server")
 
 _DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "game_state.db")
