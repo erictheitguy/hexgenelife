@@ -527,6 +527,37 @@ def _client_reliability_stats() -> dict:
     return stats
 
 
+def _load_pressure_summary() -> str:
+    """Call analyze_tick_metrics.summarize() on the server log and return a formatted block."""
+    try:
+        tool_path = os.path.join(WORKSPACE, "tools", "analyze_tick_metrics.py")
+        if not os.path.exists(tool_path) or not os.path.exists(SERVER_LOG):
+            return "(analyze_tick_metrics.py or server.log not found)"
+        spec = importlib.util.spec_from_file_location("analyze_tick_metrics", tool_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        from pathlib import Path
+        ticks = mod.parse_log(Path(SERVER_LOG))
+        if not ticks:
+            return "(no TICK-METRICS lines found in server.log)"
+        s = mod.summarize(ticks)
+        worst = f"#{s['worst_tick']}" if s["worst_tick"] is not None else "none"
+        lines = [
+            f"| Ticks analyzed | {s['tick_count']} |",
+            f"| Ticks with rejections | {s['ticks_with_rejections']} |",
+            f"| Degraded ticks | {s['degraded_ticks']} |",
+            f"| Deeply-degraded ticks | {s['deeply_degraded_ticks']} |",
+            f"| Worst tick | {worst} ({s['worst_tick_rejections']} rejections) |",
+        ]
+        total_rej = sum(s.get("total_rej_ws_cap", {}).values())
+        total_def = sum(s.get("total_def_budget", {}).values())
+        lines.append(f"| Total WS-cap rejections | {total_rej} |")
+        lines.append(f"| Total budget deferrals | {total_def} |")
+        return "| Metric | Value |\n|--------|-------|\n" + "\n".join(lines)
+    except Exception as e:
+        return f"(load pressure analysis failed: {e})"
+
+
 def _performance_metrics() -> dict:
     """Parse server/client logs for lag and fall-behind indicators."""
     metrics = {
@@ -943,6 +974,8 @@ def _build_report(
             f"| {label} | {f_min} | {f_avg} | {f_max} | {drift:+.3f} |\n"
         )
 
+    load_pressure = _load_pressure_summary()
+
     genetics_section = f"""
 ## Genetics (final snapshot, alive mobs only)
 
@@ -1063,6 +1096,10 @@ verdict: {verdict}
 ## Recommendations
 
 {recs_md}
+
+## Load / Backpressure (analyze_tick_metrics)
+
+{load_pressure}
 {genetics_section}{death_section}{pred_death_section}{log_err_section}
 ## Server Log (last 80 lines)
 
