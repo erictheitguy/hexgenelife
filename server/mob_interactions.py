@@ -19,24 +19,35 @@ logger = logging.getLogger("Server.MobInteractions")
 GRASS_PER_EAT = 5.0
 # Energy gained per eat action (herbivore)
 ENERGY_PER_EAT = 10.0
+# Energy spent per MOVE: superlinear in the distance actually moved this tick
+# and scaled by mass: cost = MOVE_ENERGY_COST * mass * move_dist**2. Small
+# steps are cheap; moving at full speed costs disproportionately more, so
+# resting/short moves conserve energy. Movement is still capped at the mob's
+# speed per tick (see handle_move_mob), so this penalises how much of that
+# per-tick budget is spent, not raw map distance.
+MOVE_ENERGY_COST = 0.2
 # Attack damage per hit
 BASE_ATTACK_DAMAGE = 10.0
 # Energy spent by attacker per attack action
 ATTACK_ENERGY_COST = 2.5
-# Energy gained per EAT_MOB bite (was 36 single-bite — now per-bite as carcass
-# is multi-bite). With CARCASS_MEAT_BASE/BITE_MEAT_DRAIN this works out to
-# ~4 bites per kill, so total nutrition extracted from one prey is roughly the
-# same as before but spread across multiple feedings (and multiple predators).
-ENERGY_FROM_MOB = 20.0
-# Fat gained per EAT_MOB bite
-FAT_FROM_MOB = 13.0
+# Energy gained per EAT_MOB bite. Raised (20→32) as part of boosting nutrition
+# per kill: committed-flee prey are hard to catch (~6-7 kills/120 ticks no matter
+# the predator count), so the few kills predators DO land must pay off enough to
+# sustain a small BREEDING population and to feed several predators sharing one
+# carcass.
+ENERGY_FROM_MOB = 32.0
+# Fat gained per EAT_MOB bite. Raised (13→26) so a single kill takes a predator
+# past the breeding fat threshold (25) — fat suppresses hunger and gates
+# reproduction, so richer meat lets a low kill rate support a breeding group.
+FAT_FROM_MOB = 26.0
 # Fat level above which gains from eating are halved (satiation curve)
 FAT_SATIATION_THRESHOLD = 40.0
 # Carcass meat pool: stored in dead mob's mob_health.fat. Floored at this
 # value on death so even a starved prey carcass yields a baseline meal.
 # Biologically: this represents body muscle mass, which doesn't depend on
-# stored fat reserves.
-CARCASS_MEAT_BASE = 80.0
+# stored fat reserves. Raised 80→110 so each kill yields more total meat
+# (~6-7 bites), enough to feed several predators well from one carcass.
+CARCASS_MEAT_BASE = 110.0
 # Meat consumed from the carcass per EAT_MOB bite.
 BITE_MEAT_DRAIN = 18.0
 # Carcass is removed when its remaining meat drops at or below this — the
@@ -350,6 +361,19 @@ class MobInteractions:
         self.mob_last_move_dist[mob_id] = move_dist
 
         self._set_position(mob_id, float(nx), float(ny))
+
+        # Movement costs energy, superlinear in distance moved and scaled by
+        # mass: small steps are cheap, full-speed moves cost disproportionately
+        # more. (move_dist is already capped at the mob's speed.)
+        if move_dist > 0:
+            mass = phys.get("mass", 1.0)
+            move_cost = MOVE_ENERGY_COST * mass * (move_dist ** 2)
+            cursor = self.db_conn.cursor()
+            cursor.execute(
+                "UPDATE mob_health SET energy = MAX(0, energy - ?) WHERE mob_id = ?",
+                (move_cost, mob_id),
+            )
+            self.db_conn.commit()
 
         # Ensure hex tiles exist around new position
         q, r = pixel_to_axial_flat_top(nx, ny, HEX_RADIUS)

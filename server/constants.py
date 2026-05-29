@@ -42,7 +42,13 @@ DEFAULT_MOB_HEALTH_EXT = {
 PREDATOR_PHYSICAL_OVERRIDES = {
     "diet_type": 1.0,
     "attack_power": 3.2,
-    "speed": 1.6,
+    # Predators must out-run committed-flee prey or they starve mid-chase
+    # (run with speed 1.6 = near-equal to prey → 1 kill all run, then extinct).
+    # 2.0 gives a clear edge over founder prey (1.0) while a fast/evolved prey
+    # (~1.6) can still open enough gap to reach a refuge. Movement cost scales
+    # with speed**2, so this sprint is expensive — predators must convert
+    # chases to kills, not cruise.
+    "speed": 2.0,
     "vision": 26.0,
     "aging_rate": 0.3,
     "metabolism_resting": 0.35,

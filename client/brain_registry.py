@@ -23,6 +23,10 @@ CARCASS_LOCK_TICKS = 4
 # Mirror of server.mob_interactions.MIN_BREED_ENERGY — if these drift,
 # the brain may pick partners the server rejects with BREED_FAILED.
 MIN_BREED_ENERGY = 40.0
+# Mirror of server.mob_interactions.MIN_BREED_ENERGY_PREDATOR. Predators need
+# deeper reserves to breed; keeping this in sync stops the brain from emitting
+# BREED_MOB the server rejects and curbs predator overshoot.
+MIN_BREED_ENERGY_PREDATOR = 65.0
 # Ticks a partner is skipped after a BREED_FAILED against them.
 BREED_FAIL_COOLDOWN_TICKS = 5
 # Ticks a predator stays committed to a specific attacked prey before
@@ -33,11 +37,34 @@ PREDATOR_FOCUS_TICKS = 12
 # elusive prey from exhausting the predator while others are nearby.
 PREDATOR_FOCUS_MAX_ATTACKS = 8
 # A different visible prey must be at least this much closer than the focused
-# prey before the predator switches targets.
-PREDATOR_SWITCH_RATIO = 1.5
+# prey before the predator switches targets. Set high so a predator commits to
+# running ONE prey down to the kill: in a dense fleeing swarm a freshly-spooked
+# prey is almost always a bit closer than the one we just wounded, and a low
+# ratio made predators spread single hits across the whole herd and kill nothing
+# (observed: 2 attacks / 0 kills across a run). Only abandon the focused prey if
+# another is >4x closer (i.e. the focused one has effectively escaped).
+PREDATOR_SWITCH_RATIO = 4.0
 # When a predator has no visible prey and no last_prey_pos memory, distances
 # beyond this from origin trigger a homeward wander bias instead of random.
 PREDATOR_EDGE_RADIUS = 25.0
+
+# Size-class preference for predator targeting.  Mirrors server's
+# LIFE_STAGE_RANK so the brain can decline futile fights — the server still
+# processes attacks against any visible mob (with reduced damage), but the
+# brain won't *choose* a target it can't realistically bring down before
+# exhausting its energy.  Baby predators that find no same-or-smaller prey
+# drop through to evaluate_movement and wait for a parent kill instead.
+_BRAIN_LIFE_STAGE_RANK = {
+    "baby": 0,
+    "infant": 1,
+    "juvenile": 2,
+    "adult": 3,
+    "senior": 3,
+}
+
+
+def _brain_stage_rank(stage) -> int:
+    return _BRAIN_LIFE_STAGE_RANK.get(stage or "adult", 3)
 # Herd instinct is suppressed when the mob's local tile grass falls below this value.
 # Prevents cluster pull from overriding the need to disperse when the shared area is depleted.
 GRASS_HERD_SUPPRESS_THRESHOLD = 2.0
@@ -174,14 +201,27 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
         current_pos = json.loads(current_pos)
     cx, cy = current_pos.get("x", 0), current_pos.get("y", 0)
 
-    # If we have a threat, move away from it
+    # If we have a threat, flee — and COMMIT to the escape heading for several
+    # ticks. The server caps movement at the mob's own speed/tick, so a prey
+    # that holds a straight outward line keeps a constant gap from an
+    # equal-speed predator and slips away, while prey that graze or jitter get
+    # caught. Persisting the heading (graze_dir + wander_steps) lets a subset
+    # of prey disperse to a refuge and survive the predator peak — the escape
+    # valve that keeps the boom-bust cycle from going one-way extinct.
     threat = memory.get("threat")
     if threat:
+        _phys = mob_state.get("physical", {})
+        _persistence = _phys.get("persistence", 5.0)
+        _speed = _phys.get("speed", 1.0)
         tx, ty = threat["position"]["x"], threat["position"]["y"]
         dx, dy = cx - tx, cy - ty
         dist = math.sqrt(dx * dx + dy * dy) or 1
-        move_x = int(cx + (dx / dist) * 3)
-        move_y = int(cy + (dy / dist) * 3)
+        fx, fy = dx / dist, dy / dist
+        memory["graze_dir_x"], memory["graze_dir_y"] = fx, fy
+        memory["wander_steps"] = int(max(_persistence, 6))
+        step = max(3.0, _speed * 3)
+        move_x = int(cx + fx * step)
+        move_y = int(cy + fy * step)
         memory.pop("threat", None)
         return {"action": "MOVE_MOB", "payload": {
             "targetLocation": {"x": move_x, "y": move_y}
@@ -207,9 +247,15 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
         nearest_tile = min(tiles, key=lambda t: t.get("distance", 999))
         local_grass = nearest_tile.get("grass", 0.0)
 
-    # Suppress herd when local grass is depleted — mob must disperse to find food
+    # When local grass is depleted the herd should MIGRATE toward fresh grass
+    # together, not scatter: soften (don't kill) cohesion so the grass vector
+    # leads the move "out" toward grazing while the mob still stays loosely with
+    # the group. The per-mob herd value sets the baseline grass-vs-cohesion
+    # balance; this only tilts it toward foraging when there's nothing to eat
+    # underfoot. Emergent result: a few prey heading for ungrazed tiles pull the
+    # rest along via the (reduced but live) cohesion vector.
     if local_grass < GRASS_HERD_SUPPRESS_THRESHOLD:
-        herd = 0.0
+        herd *= 0.5
 
     # --- Grass vector: toward highest-grass visible tile above seek minimum ---
     gvx, gvy = 0.0, 0.0
@@ -249,7 +295,11 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
             if dist >= 2.0:
                 memory["pursue_steps"] = pursue_steps - 1
                 speed = physical.get("speed", 1.5)
-                step = max(wander_dist, speed * 2)
+                # Active pursuit: stride 3× speed so the predator can actually
+                # close on prey that's flagged in vision but past attack range.
+                # Run-23 showed predator_4 dying with 8 prey at 9 units away —
+                # the previous 2× stride couldn't catch them.
+                step = max(wander_dist, speed * 3)
                 move_x = int(cx + (dx/dist) * step)
                 move_y = int(cy + (dy/dist) * step)
                 return {"action": "MOVE_MOB", "payload": {
@@ -269,13 +319,35 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
             else:
                 memory.pop("last_prey_pos", None)
         else:
-            # No prey signal at all — if we've wandered to the map edge, bias
-            # back toward origin instead of doubling down on random direction.
-            # Origin is the spawn region, where prey are likely to be.
-            dist_from_origin = math.sqrt(cx*cx + cy*cy)
-            if dist_from_origin > PREDATOR_EDGE_RADIUS:
-                d = dist_from_origin or 1
-                gvx, gvy = -cx/d, -cy/d
+            # No prey signal. A baby/juvenile predator is a poor hunter, so it
+            # tags along with the nearest visible ADULT predator to scavenge
+            # that adult's kills until it matures. (LOOK carries other mobs'
+            # mob_type + life_stage.)
+            self_stage = mob_state.get("life_stage", "adult")
+            if _brain_stage_rank(self_stage) < 3:
+                adults = [m for m in visible_mobs
+                          if m.get("mob_type") == "predator"
+                          and m.get("alive", True)
+                          and _brain_stage_rank(m.get("life_stage", "adult")) >= 3
+                          and m.get("distance", 0) > 0]
+                if adults:
+                    nearest_adult = min(adults, key=lambda m: m.get("distance", 999))
+                    ax = nearest_adult["position"]["x"]
+                    ay = nearest_adult["position"]["y"]
+                    ddx, ddy = ax - cx, ay - cy
+                    dd = math.sqrt(ddx*ddx + ddy*ddy) or 1
+                    # Trail at a small following gap rather than stacking on the
+                    # adult, so the cub is on hand when the adult makes a kill.
+                    if dd > 3.0:
+                        gvx, gvy = ddx/dd, ddy/dd
+            # No adult to follow either — if we've wandered to the map edge,
+            # bias back toward origin (spawn region, where prey are likely)
+            # instead of doubling down on a random outward direction.
+            if gvx == 0 and gvy == 0:
+                dist_from_origin = math.sqrt(cx*cx + cy*cy)
+                if dist_from_origin > PREDATOR_EDGE_RADIUS:
+                    d = dist_from_origin or 1
+                    gvx, gvy = -cx/d, -cy/d
 
     # --- Blend vectors: grass weighted by (1-herd), herd weighted by herd ---
     # If no usable grass and herd is suppressed, fall back to persistent wander
@@ -386,19 +458,38 @@ def evaluate_attack_target(matrix, memory, outputs, mob_state):
         next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
         return {"matrix": matrix, "next": next_node}
 
-    targets = [m for m in visible_mobs
-               if m.get("mob_type") == "prey"
-               and m.get("alive", True)
-               and m.get("distance", 999) < mob_state.get("vision", 15)]
+    # Visible prey within vision range.  Size-class is enforced TWICE:
+    #   1. Server-side: attacks on larger prey deal exponentially reduced
+    #      damage (a baby vs adult is ~6%).  Allowed by the world.
+    #   2. Brain-side (here): we filter to same-or-smaller targets so the
+    #      brain won't *choose* a futile fight that would exhaust energy.
+    # If no viable target exists we drop through to evaluate_movement —
+    # better to wander and wait for a parent kill than starve in a chase.
+    self_rank = _brain_stage_rank(mob_state.get("life_stage", "adult"))
+    in_sight = [m for m in visible_mobs
+                if m.get("mob_type") == "prey"
+                and m.get("alive", True)
+                and m.get("distance", 999) < mob_state.get("vision", 15)]
+    targets = [m for m in in_sight
+               if _brain_stage_rank(m.get("life_stage", "adult")) <= self_rank]
 
     if not targets:
         memory.pop("attack_target", None)
         memory.pop("target_in_range", None)
-        # Focused prey left vision but commitment is still live — keep pursuit
-        # vector pointed at the last known position so evaluate_movement can
-        # follow rather than reverting to random wander.
+        # No prey is a viable *attack* target (any in sight are a larger
+        # size-class), but if we can see prey at all we should hold near it —
+        # loiter to scavenge a kill or pick off a straggler rather than
+        # wandering off. Anchor pursuit to the focused prey's last spot, else
+        # the nearest visible prey, so evaluate_movement heads toward / holds
+        # near it instead of reverting to random wander.
+        anchor = None
         if focus:
-            memory["last_prey_pos"] = dict(focus["position"])
+            anchor = dict(focus["position"])
+        elif in_sight:
+            nearest_seen = min(in_sight, key=lambda m: m.get("distance", 999))
+            anchor = dict(nearest_seen["position"])
+        if anchor:
+            memory["last_prey_pos"] = anchor
             memory["pursue_steps"] = max(memory.get("pursue_steps", 0), 20)
         next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
         return {"matrix": matrix, "next": next_node}
@@ -422,20 +513,47 @@ def evaluate_attack_target(matrix, memory, outputs, mob_state):
         chosen = min(targets, key=lambda m: m.get("distance", 999))
 
     memory["attack_target"] = chosen
-    memory["target_in_range"] = chosen.get("distance", 999) <= ATTACK_RANGE
+    in_range = chosen.get("distance", 999) <= ATTACK_RANGE
+    memory["target_in_range"] = in_range
     memory["last_prey_pos"] = dict(chosen["position"])
     memory["pursue_steps"] = 80
-    next_node = outputs[0] if outputs else None
+    # Commit to THIS prey while closing. Focus normally starts on the first
+    # landed attack, but with attack-only-in-range a predator may chase for many
+    # ticks before it can strike — and in a dense prey field, re-picking the
+    # nearest target every tick makes it zig-zag and never close (observed: a
+    # whole run with 0 attacks). Set/refresh focus now so the predator runs down
+    # one prey instead of the swarm. (consecutive_attacks stays 0 until an actual
+    # hit, so the anti-exhaustion cap only counts landed blows.)
+    cur_focus = memory.get("focus_target")
+    if cur_focus and cur_focus.get("mobId") == chosen.get("mobId"):
+        cur_focus["ticks_remaining"] = PREDATOR_FOCUS_TICKS
+        cur_focus["position"] = dict(chosen["position"])
+    else:
+        memory["focus_target"] = {
+            "mobId": chosen.get("mobId"),
+            "position": dict(chosen["position"]),
+            "ticks_remaining": PREDATOR_FOCUS_TICKS,
+            "consecutive_attacks": 0,
+        }
+    if in_range:
+        # In reach — attack. Energy is only spent on blows that land.
+        next_node = outputs[0] if outputs else None
+    else:
+        # Out of reach — a lazy, energy-conserving predator doesn't swing at
+        # nothing. Close the gap via evaluate_movement (which pursues
+        # last_prey_pos), then attack once in range.
+        next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
     return {"matrix": matrix, "next": next_node}
 
 
 @register("action_attack")
 def action_attack(matrix, memory, outputs, mob_state):
-    """Emit ATTACK_MOB targeting the mob stored in memory.
+    """Emit ATTACK_MOB against the prey stored in memory.
 
-    Server does not enforce attack range, so always attack — prey dies in
-    fewer ticks regardless of distance.  evaluate_eat_carcass handles
-    moving to the resulting carcass.
+    evaluate_attack_target only routes here when the target is within
+    ATTACK_RANGE — predators conserve energy by closing distance rather than
+    swinging from afar (each hit costs energy and many hunts fail).
+    evaluate_eat_carcass handles moving to and eating the resulting carcass.
 
     Also refreshes memory["focus_target"] so the predator stays committed to
     this prey through brief vision loss but bails after too many attacks
@@ -535,7 +653,10 @@ def evaluate_breed_energy(matrix, memory, outputs, mob_state):
     # Predators need stronger reserves and recent feeding before breeding.
     if mob_type == "predator":
         ate_recently = bool(memory.get("eat_target")) or mob_state.get("hunger", 0) < 10
-        can_breed = energy >= 48 and fat >= 25 and health >= 90 and life_stage == "adult" and ate_recently
+        # Mirror server's MIN_BREED_ENERGY_PREDATOR so the brain doesn't burn
+        # actions on BREED_MOB the server rejects, and so predators only breed
+        # on genuine surplus — damping the overshoot.
+        can_breed = energy >= MIN_BREED_ENERGY_PREDATOR and fat >= 25 and health >= 90 and life_stage == "adult" and ate_recently
     else:
         can_breed = energy >= 45 and health >= 80 and life_stage == "adult"
 

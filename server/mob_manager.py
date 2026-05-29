@@ -67,13 +67,39 @@ class MobManager:
 
         cursor = self.db_conn.cursor()
 
-        # Pick a random starting tile
-        cursor.execute("SELECT centerX, centerY FROM hex_tiles ORDER BY RANDOM() LIMIT 1")
-        row = cursor.fetchone()
-        if row:
-            pos = {"x": float(row["centerX"]), "y": float(row["centerY"])}
-        else:
-            pos = {"x": 0.0, "y": 0.0}
+        # Founding predators spawn NEXT TO a live prey, not on a random tile.
+        # Predators only eat by hunting, so a seed predator dropped at a random
+        # tile far from the herd starves before it ever finds prey (observed:
+        # most founders died with 0 attacks). Spawning in the herd lets them
+        # start hunting immediately. Bred predators already inherit the parent's
+        # position via breed_mobs, so this only affects the initial seeds.
+        pos = None
+        if mob_type == "predator":
+            cursor.execute(
+                "SELECT m.position FROM mobs m "
+                "LEFT JOIN mob_genes g ON m.mob_id = g.mob_id "
+                "WHERE m.mob_type = 'prey' AND m.is_active = 1 "
+                "  AND (g.death IS NULL OR g.death = 0) "
+                "ORDER BY RANDOM() LIMIT 1"
+            )
+            prow = cursor.fetchone()
+            if prow and prow["position"]:
+                try:
+                    ppos = json.loads(prow["position"])
+                    pos = {"x": float(ppos["x"]) + random.uniform(-3.0, 3.0),
+                           "y": float(ppos["y"]) + random.uniform(-3.0, 3.0)}
+                except (json.JSONDecodeError, TypeError, KeyError):
+                    pos = None
+
+        if pos is None:
+            # Default (all prey, and predators when no live prey exist yet):
+            # a random starting tile.
+            cursor.execute("SELECT centerX, centerY FROM hex_tiles ORDER BY RANDOM() LIMIT 1")
+            row = cursor.fetchone()
+            if row:
+                pos = {"x": float(row["centerX"]), "y": float(row["centerY"])}
+            else:
+                pos = {"x": 0.0, "y": 0.0}
 
         now = time.time()
         species_id = f"species_{mob_type}_default"
