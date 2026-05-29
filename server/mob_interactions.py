@@ -476,6 +476,20 @@ class MobInteractions:
                 "UPDATE mob_genes SET death = ? WHERE mob_id = ?",
                 (now, target_id),
             )
+            # fitnessScore at predation death: lifespan * (1 + offspring)
+            target_health = self.mob_manager.get_mob_health(target_id)
+            target_age  = target_health.get("age", 0.0)
+            target_max  = target_health.get("max_age", 500.0)
+            offspring_count = cursor.execute(
+                "SELECT COUNT(*) FROM family_tree WHERE parent_a_id=? OR parent_b_id=?",
+                (target_id, target_id),
+            ).fetchone()[0]
+            lifespan_frac = min(1.0, target_age / max(target_max, 1.0))
+            fitness = round(lifespan_frac * (1 + offspring_count), 4)
+            cursor.execute(
+                "UPDATE mob_genes SET fitnessScore = ? WHERE mob_id = ?",
+                (fitness, target_id),
+            )
             # Keep is_active=1 briefly so predators can see and eat the carcass;
             # metabolism loop will set is_active=0 after it's been eaten or times out.
             self.db_conn.commit()
@@ -483,7 +497,8 @@ class MobInteractions:
             self._apply_carcass_meat(target_id)
             self.db_conn.commit()
             logger.info(
-                f"Mob {target_id} died cause=predation killer={mob_id}"
+                f"Mob {target_id} died cause=predation killer={mob_id} "
+                f"fitness={fitness} offspring={offspring_count}"
             )
 
         self._record_interaction(mob_id, target_id, "ATTACK", "HIT",
@@ -784,9 +799,10 @@ class MobInteractions:
 
             # Death check
             if new_health <= 0:
+                now_ts = time.time()
                 cursor.execute(
                     "UPDATE mob_genes SET death = ? WHERE mob_id = ?",
-                    (time.time(), mob_id),
+                    (now_ts, mob_id),
                 )
                 # Initialise carcass meat pool — body still has muscle even if
                 # the mob died starved (fat=0). Done as a direct UPDATE here
@@ -795,6 +811,18 @@ class MobInteractions:
                 cursor.execute(
                     "UPDATE mob_health SET fat = MAX(fat, ?) WHERE mob_id = ?",
                     (CARCASS_MEAT_BASE, mob_id),
+                )
+                # fitnessScore: lifespan fraction * (1 + offspring count).
+                # Proxy for selection pressure — longer-lived mobs that bred get higher scores.
+                offspring_count = cursor.execute(
+                    "SELECT COUNT(*) FROM family_tree WHERE parent_a_id=? OR parent_b_id=?",
+                    (mob_id, mob_id),
+                ).fetchone()[0]
+                lifespan_frac = min(1.0, new_age / max(max_age, 1.0))
+                fitness = round(lifespan_frac * (1 + offspring_count), 4)
+                cursor.execute(
+                    "UPDATE mob_genes SET fitnessScore = ? WHERE mob_id = ?",
+                    (fitness, mob_id),
                 )
                 if hasattr(self.server, "remove_from_spatial_index"):
                     self.server.remove_from_spatial_index(mob_id)
@@ -805,7 +833,8 @@ class MobInteractions:
                 else:
                     cause = "unknown"
                 logger.info(
-                    f"Mob {mob_id} died cause={cause} health={new_health:.1f}"
+                    f"Mob {mob_id} died cause={cause} health={new_health:.1f} "
+                    f"fitness={fitness} offspring={offspring_count}"
                 )
 
         self.db_conn.commit()

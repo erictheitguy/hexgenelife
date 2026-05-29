@@ -588,6 +588,57 @@ class GameServer:
                               else 1 if self._degraded_mode else 0),
             }
             logger.info(f"[TICK-METRICS] {json.dumps(metrics_line, separators=(',', ':'))}")
+
+            # ECO-METRICS every 10 ticks — population, grass, generation, trait means.
+            if tick_num % 10 == 0:
+                try:
+                    eco_cur = self.db_conn.cursor()
+                    eco_cur.execute(
+                        "SELECT m.mob_type, h.life_stage, COUNT(*) n "
+                        "FROM mobs m JOIN mob_health h ON m.mob_id=h.mob_id "
+                        "LEFT JOIN mob_genes g ON m.mob_id=g.mob_id "
+                        "WHERE (g.death IS NULL OR g.death=0) AND h.health > 0 "
+                        "GROUP BY m.mob_type, h.life_stage"
+                    )
+                    by_stage: dict = {}
+                    for r in eco_cur.fetchall():
+                        by_stage[f"{r['mob_type']}.{r['life_stage']}"] = r["n"]
+                    eco_cur.execute(
+                        "SELECT SUM(Grass) total, AVG(Grass) avg, "
+                        "SUM(CASE WHEN Grass <= 0.5 THEN 1 ELSE 0 END) depleted "
+                        "FROM hex_tiles"
+                    )
+                    gr = eco_cur.fetchone()
+                    eco_cur.execute(
+                        "SELECT m.mob_type, "
+                        "AVG(p.speed) spd, AVG(p.vision) vis, AVG(p.aging_rate) age_r, "
+                        "MAX(m.generation) max_gen "
+                        "FROM mobs m JOIN mob_physical p ON m.mob_id=p.mob_id "
+                        "JOIN mob_health h ON m.mob_id=h.mob_id "
+                        "LEFT JOIN mob_genes g ON m.mob_id=g.mob_id "
+                        "WHERE (g.death IS NULL OR g.death=0) AND h.health > 0 "
+                        "GROUP BY m.mob_type"
+                    )
+                    trait_means: dict = {}
+                    for r in eco_cur.fetchall():
+                        t = r["mob_type"]
+                        trait_means[t] = {
+                            "speed": round(r["spd"] or 0, 3),
+                            "vision": round(r["vis"] or 0, 3),
+                            "aging_rate": round(r["age_r"] or 0, 3),
+                            "max_gen": int(r["max_gen"] or 0),
+                        }
+                    eco_line = {
+                        "tick": tick_num,
+                        "by_stage": by_stage,
+                        "grass_total": round(float(gr["total"] or 0), 1),
+                        "grass_avg": round(float(gr["avg"] or 0), 2),
+                        "grass_depleted": int(gr["depleted"] or 0),
+                        "traits": trait_means,
+                    }
+                    logger.info(f"[ECO-METRICS] {json.dumps(eco_line, separators=(',', ':'))}")
+                except Exception as _eco_err:
+                    logger.debug(f"ECO-METRICS query failed: {_eco_err}")
             if t_total * 1000.0 > SLOW_TICK_WARN_MS:
                 self._slow_tick_streak += 1
                 logger.warning(
