@@ -10,6 +10,7 @@ import uuid
 from server.constants import (
     DEFAULT_MOB_PHYSICAL, DEFAULT_MOB_HEALTH_EXT, DEFAULT_DECISION_TREE,
     HEX_RADIUS, pixel_to_axial_flat_top,
+    attack_size_factor,
 )
 
 logger = logging.getLogger("Server.MobInteractions")
@@ -22,12 +23,25 @@ ENERGY_PER_EAT = 10.0
 BASE_ATTACK_DAMAGE = 10.0
 # Energy spent by attacker per attack action
 ATTACK_ENERGY_COST = 2.5
-# Energy gained from eating a mob
-ENERGY_FROM_MOB = 36.0
-# Fat gained from eating a mob
-FAT_FROM_MOB = 22.0
+# Energy gained per EAT_MOB bite (was 36 single-bite — now per-bite as carcass
+# is multi-bite). With CARCASS_MEAT_BASE/BITE_MEAT_DRAIN this works out to
+# ~4 bites per kill, so total nutrition extracted from one prey is roughly the
+# same as before but spread across multiple feedings (and multiple predators).
+ENERGY_FROM_MOB = 20.0
+# Fat gained per EAT_MOB bite
+FAT_FROM_MOB = 13.0
 # Fat level above which gains from eating are halved (satiation curve)
 FAT_SATIATION_THRESHOLD = 40.0
+# Carcass meat pool: stored in dead mob's mob_health.fat. Floored at this
+# value on death so even a starved prey carcass yields a baseline meal.
+# Biologically: this represents body muscle mass, which doesn't depend on
+# stored fat reserves.
+CARCASS_MEAT_BASE = 80.0
+# Meat consumed from the carcass per EAT_MOB bite.
+BITE_MEAT_DRAIN = 18.0
+# Carcass is removed when its remaining meat drops at or below this — the
+# point at which only bones/scraps are left.
+MIN_MEAT_LEFT = 5.0
 # Hunger increase per tick
 HUNGER_PER_TICK = 1.0
 # Fat consumed per tick (resting metabolism) — kept for reference
@@ -40,17 +54,27 @@ STARVATION_TIER2 = 40.0   # hunger > 40  → 3 damage
 # Predator-specific sustain adjustments
 PREDATOR_STARVATION_TIER1 = 35.0
 PREDATOR_STARVATION_TIER2 = 45.0
-PREDATOR_HUNGER_PER_TICK = 0.8
+# Predators burn calories faster than prey — active hunting is metabolically
+# expensive. Without this, well-fed predators experience zero mortality and
+# the population grows without bound until prey collapse (Run-25 showed
+# 0 predator deaths across 30 minutes). 1.4 makes predators starve about
+# twice as fast as prey when food is scarce.
+PREDATOR_HUNGER_PER_TICK = 1.4
 PREDATOR_ATTACK_ENERGY_COST = 1.8
 CARCASS_STALE_SECONDS = 60.0
 # Aging cost per unit of age increase
 ENERGY_PER_AGE_UNIT = 1.0
 # Age increase per tick (default, overridden by mob_physical.aging_rate)
 DEFAULT_AGING_RATE = 0.125
-# Breeding energy cost
+# Breeding energy cost (prey)
 BREED_ENERGY_COST = 20.0
-# Minimum energy to breed
+# Minimum energy to breed (prey)
 MIN_BREED_ENERGY = 40.0
+# Predators pay more to breed and require deeper reserves — apex predators
+# breed slowly in nature and we want the population to grow only when prey
+# is abundant.
+BREED_ENERGY_COST_PREDATOR = 40.0
+MIN_BREED_ENERGY_PREDATOR = 65.0
 
 
 class MobInteractions:
@@ -71,6 +95,18 @@ class MobInteractions:
         cursor.execute("SELECT * FROM mobs WHERE mob_id = ?", (mob_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
+
+    def _apply_carcass_meat(self, mob_id: str) -> None:
+        """Ensure a freshly-killed mob's carcass has at least CARCASS_MEAT_BASE
+        meat, stored in mob_health.fat. Called from every death code path so a
+        single carcass can sustain multiple bites and feed multiple predators.
+        Uses MAX so a well-fed prey's carcass keeps its higher fat (bigger meal)
+        while a starved prey still yields the baseline."""
+        cursor = self.db_conn.cursor()
+        cursor.execute(
+            "UPDATE mob_health SET fat = MAX(fat, ?) WHERE mob_id = ?",
+            (CARCASS_MEAT_BASE, mob_id),
+        )
 
     def _get_position(self, mob_id: str) -> dict | None:
         row = self._get_mob_row(mob_id)
@@ -407,6 +443,19 @@ class MobInteractions:
         defense = t_phys.get("defense", 1.0)
         damage = max(0.0, attack * BASE_ATTACK_DAMAGE - defense * 2.0)
 
+        # Scale damage by size-class mismatch. A baby predator can attempt to
+        # attack an adult prey, but its damage is a small fraction of normal —
+        # it'll exhaust its energy without bringing the target down. Lets the
+        # size constraint be emergent (any mob can try anything) rather than a
+        # hard brain-side rule.
+        attacker_health = self.mob_manager.get_mob_health(mob_id)
+        target_health = self.mob_manager.get_mob_health(target_id)
+        size_factor = attack_size_factor(
+            attacker_health.get("life_stage", "adult"),
+            target_health.get("life_stage", "adult"),
+        )
+        damage *= size_factor
+
         cursor = self.db_conn.cursor()
         cursor.execute(
             "UPDATE mob_health SET health = MAX(0, health - ?) WHERE mob_id = ?",
@@ -430,6 +479,12 @@ class MobInteractions:
             # Keep is_active=1 briefly so predators can see and eat the carcass;
             # metabolism loop will set is_active=0 after it's been eaten or times out.
             self.db_conn.commit()
+            # Initialise carcass meat pool so multiple predators can feed.
+            self._apply_carcass_meat(target_id)
+            self.db_conn.commit()
+            logger.info(
+                f"Mob {target_id} died cause=predation killer={mob_id}"
+            )
 
         self._record_interaction(mob_id, target_id, "ATTACK", "HIT",
                                   {"damage": damage})
@@ -471,7 +526,31 @@ class MobInteractions:
         h = cursor.fetchone()
         cur_fat = h["fat"] if h else 0.0
 
-        # Satiation curve: halve fat gains when predator is already well-fed
+        # Carcass meat is stored on the target's mob_health.fat. Death paths
+        # floor it to CARCASS_MEAT_BASE; this read uses MAX as a safety net
+        # in case a test or alternate code path set the death timestamp
+        # without going through _apply_carcass_meat.
+        cursor.execute("SELECT fat FROM mob_health WHERE mob_id = ?", (target_id,))
+        t_row = cursor.fetchone()
+        target_meat = max(t_row["fat"] if t_row else 0.0, 0.0)
+
+        if target_meat <= 0.0:
+            # Empty carcass (scavenged or stale) — clean up without nutrition.
+            cursor.execute("DELETE FROM mobs WHERE mob_id = ?", (target_id,))
+            self.db_conn.commit()
+            if hasattr(self.server, "remove_from_spatial_index"):
+                self.server.remove_from_spatial_index(target_id)
+            await self.server.send_error(websocket, "CARCASS_EMPTY",
+                                         "Carcass has no meat left.")
+            return
+
+        # One bite removes BITE_MEAT_DRAIN from the carcass (or all that's left
+        # if the carcass is nearly bones). The predator's per-bite gain stays
+        # the same regardless — a small bite still nourishes a small predator.
+        bite_drained = min(BITE_MEAT_DRAIN, target_meat)
+        new_target_meat = target_meat - bite_drained
+
+        # Satiation curve: halve fat gains when predator is already well-fed.
         fat_gain = FAT_FROM_MOB * 0.5 if cur_fat > FAT_SATIATION_THRESHOLD else FAT_FROM_MOB
 
         cursor.execute(
@@ -479,11 +558,20 @@ class MobInteractions:
             "WHERE mob_id = ?",
             (ENERGY_FROM_MOB, fat_gain, mob_id),
         )
-        # Remove consumed mob
-        cursor.execute("DELETE FROM mobs WHERE mob_id = ?", (target_id,))
-        self.db_conn.commit()
-        if hasattr(self.server, "remove_from_spatial_index"):
-            self.server.remove_from_spatial_index(target_id)
+
+        if new_target_meat <= MIN_MEAT_LEFT:
+            # Carcass picked clean — remove it.
+            cursor.execute("DELETE FROM mobs WHERE mob_id = ?", (target_id,))
+            self.db_conn.commit()
+            if hasattr(self.server, "remove_from_spatial_index"):
+                self.server.remove_from_spatial_index(target_id)
+        else:
+            # Carcass still has meat — leave it for the next bite/predator.
+            cursor.execute(
+                "UPDATE mob_health SET fat = ? WHERE mob_id = ?",
+                (new_target_meat, target_id),
+            )
+            self.db_conn.commit()
 
         self._record_interaction(mob_id, target_id, "EAT_MOB", "SUCCESS")
 
@@ -526,9 +614,29 @@ class MobInteractions:
         h_a = self.mob_manager.get_mob_health(parent_a_id)
         h_b = self.mob_manager.get_mob_health(parent_b_id)
 
-        if h_a.get("energy", 0) < MIN_BREED_ENERGY:
+        # Determine mob type and parent generations up front.
+        cursor = self.db_conn.cursor()
+        cursor.execute(
+            "SELECT mob_type, generation FROM mobs WHERE mob_id = ?", (parent_a_id,)
+        )
+        row = cursor.fetchone()
+        mob_type = row["mob_type"] if row else "prey"
+        gen_a = row["generation"] if row else 0
+        cursor.execute("SELECT generation FROM mobs WHERE mob_id = ?", (parent_b_id,))
+        row_b = cursor.fetchone()
+        gen_b = row_b["generation"] if row_b else 0
+        child_generation = max(gen_a, gen_b) + 1
+
+        if mob_type == "predator":
+            min_energy = MIN_BREED_ENERGY_PREDATOR
+            breed_cost = BREED_ENERGY_COST_PREDATOR
+        else:
+            min_energy = MIN_BREED_ENERGY
+            breed_cost = BREED_ENERGY_COST
+
+        if h_a.get("energy", 0) < min_energy:
             return None
-        if h_b.get("energy", 0) < MIN_BREED_ENERGY:
+        if h_b.get("energy", 0) < min_energy:
             return None
         if h_a.get("life_stage", "adult") != "adult":
             return None
@@ -547,23 +655,22 @@ class MobInteractions:
             mutation = random.uniform(-0.1, 0.1) * avg
             child_phys[key] = max(0.01, avg + mutation)
 
-        # Determine mob type from parent A
-        cursor = self.db_conn.cursor()
-        cursor.execute("SELECT mob_type FROM mobs WHERE mob_id = ?", (parent_a_id,))
-        row = cursor.fetchone()
-        mob_type = row["mob_type"] if row else "prey"
-
         # Generate child ID
         child_client_id = f"child_{uuid.uuid4().hex[:8]}"
         child_mob_id = self.mob_manager.ensure_client_mob(
             child_client_id, mob_type=mob_type, physical_overrides=child_phys
         )
 
-        # Set child as baby at parent A's position
+        # Set child as baby at parent A's position, and mark it active so the
+        # LOOK query (which filters WHERE is_active = 1) returns it to other
+        # mobs.  is_active is normally set when a WebSocket client first sends
+        # a message for mob_{client_id}; the parent client adopts this child
+        # but never triggers that path, so without this update the child would
+        # be invisible to predators and prey alike for its entire life.
         pos = self._get_position(parent_a_id) or {"x": 0.0, "y": 0.0}
         cursor.execute(
-            "UPDATE mobs SET position = ? WHERE mob_id = ?",
-            (json.dumps(pos), child_mob_id),
+            "UPDATE mobs SET position = ?, is_active = 1, generation = ? WHERE mob_id = ?",
+            (json.dumps(pos), child_generation, child_mob_id),
         )
         cursor.execute(
             "UPDATE mob_health SET life_stage = 'baby', age = 0.0, hunger = 0.0, fat = 20.0, energy = 50.0 WHERE mob_id = ?",
@@ -576,10 +683,10 @@ class MobInteractions:
             (parent_a_id, parent_b_id, child_mob_id),
         )
 
-        # Deduct energy from parents
+        # Deduct energy from parents (predator-specific cost applied if relevant)
         cursor.execute(
             "UPDATE mob_health SET energy = MAX(0, energy - ?) WHERE mob_id IN (?, ?)",
-            (BREED_ENERGY_COST, parent_a_id, parent_b_id),
+            (breed_cost, parent_a_id, parent_b_id),
         )
         self.db_conn.commit()
 
@@ -681,9 +788,25 @@ class MobInteractions:
                     "UPDATE mob_genes SET death = ? WHERE mob_id = ?",
                     (time.time(), mob_id),
                 )
+                # Initialise carcass meat pool — body still has muscle even if
+                # the mob died starved (fat=0). Done as a direct UPDATE here
+                # rather than calling _apply_carcass_meat to avoid an extra
+                # commit inside the metabolism loop.
+                cursor.execute(
+                    "UPDATE mob_health SET fat = MAX(fat, ?) WHERE mob_id = ?",
+                    (CARCASS_MEAT_BASE, mob_id),
+                )
                 if hasattr(self.server, "remove_from_spatial_index"):
                     self.server.remove_from_spatial_index(mob_id)
-                logger.info(f"Mob {mob_id} died (health={new_health}, age={new_age})")
+                if new_age >= max_age:
+                    cause = f"old_age age={new_age:.1f}/{max_age:.1f}"
+                elif damage > 0:
+                    cause = f"starvation hunger={new_hunger:.1f}"
+                else:
+                    cause = "unknown"
+                logger.info(
+                    f"Mob {mob_id} died cause={cause} health={new_health:.1f}"
+                )
 
         self.db_conn.commit()
         self.flush_interactions()

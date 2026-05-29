@@ -6,9 +6,35 @@ import sqlite3
 import time
 import uuid
 
-from server.constants import DEFAULT_MOB_PHYSICAL, DEFAULT_MOB_HEALTH_EXT, DEFAULT_DECISION_TREE, DEFAULT_PREDATOR_DECISION_TREE
+from server.constants import (DEFAULT_MOB_PHYSICAL, DEFAULT_MOB_HEALTH_EXT,
+                              DEFAULT_DECISION_TREE, DEFAULT_PREDATOR_DECISION_TREE,
+                              PREDATOR_PHYSICAL_OVERRIDES)
 
 logger = logging.getLogger("Server.MobManager")
+
+
+def _staggered_starter_age(max_age: float) -> tuple[float, str]:
+    """Pick a random starter age in [0, 0.5 * max_age] with matching life_stage.
+
+    Spawning every starter at age 0 produces a synchronized age cohort that
+    all reaches old age together (~tick 1000-1100 in observed runs), causing
+    a catastrophic population collapse independent of predation. Staggering
+    ages gives the starter population a realistic age pyramid: a mix of
+    juveniles and adults at spawn, so reproduction and senescence overlap
+    continuously rather than as cohort events.
+
+    Range capped at 50% of max_age so no starter spawns as a senior — old
+    age emerges naturally as the simulation runs.
+    """
+    age = random.uniform(0.0, max_age * 0.5)
+    frac = age / max_age if max_age > 0 else 0.0
+    if frac < 0.05:
+        stage = "baby"
+    elif frac < 0.15:
+        stage = "juvenile"
+    else:
+        stage = "adult"
+    return age, stage
 
 
 class MobManager:
@@ -66,14 +92,19 @@ class MobManager:
             (mob_id, mob_type, 0.0, None, False),
         )
 
-        # mob_health
+        # mob_health — starters get a staggered age so the initial population
+        # has a mixed age pyramid rather than a synchronized cohort. Bred
+        # children are still created via ensure_client_mob but breed_mobs
+        # then UPDATEs them back to age=0, life_stage='baby' so newborns
+        # remain unaffected by this stagger.
         h = DEFAULT_MOB_HEALTH_EXT
+        init_age, init_stage = _staggered_starter_age(h["max_age"])
         cursor.execute(
             """INSERT OR IGNORE INTO mob_health
                (mob_id, hunger, fat, health, age, energy, life_stage, birth_tick, max_age)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (mob_id, 0.0, 0.0, 100.0, 0.0,
-             h["energy"], "baby", h["birth_tick"], h["max_age"]),
+            (mob_id, 0.0, 0.0, 100.0, init_age,
+             h["energy"], init_stage, h["birth_tick"], h["max_age"]),
         )
         if mob_type == "predator":
             cursor.execute(
@@ -84,14 +115,7 @@ class MobManager:
         # mob_physical
         phys = dict(DEFAULT_MOB_PHYSICAL)
         if mob_type == "predator":
-            phys.update({
-                "diet_type": 1.0,
-                "attack_power": 3.2,
-                "speed": 1.6,
-                "vision": 26.0,
-                "aging_rate": 0.3,
-                "metabolism_resting": 0.35,
-            })
+            phys.update(PREDATOR_PHYSICAL_OVERRIDES)
         if physical_overrides:
             phys.update(physical_overrides)
 

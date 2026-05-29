@@ -35,6 +35,55 @@ DEFAULT_MOB_HEALTH_EXT = {
     "birth_tick": 0.0,
     "max_age": 500.0,
 }
+
+# Predator-specific physical overrides — these are the *actual* tuning surface
+# for predator balance.  DEFAULT_MOB_PHYSICAL applies to prey; predators get
+# these values merged on top before any per-spawn physical_overrides are applied.
+PREDATOR_PHYSICAL_OVERRIDES = {
+    "diet_type": 1.0,
+    "attack_power": 3.2,
+    "speed": 1.6,
+    "vision": 26.0,
+    "aging_rate": 0.3,
+    "metabolism_resting": 0.35,
+}
+
+# --- Size class by life stage ---
+# Used by attack damage scaling: a mob attacking a target of higher size
+# class deals exponentially reduced damage (a baby predator clawing at an
+# adult deer can keep trying, but it'll exhaust its energy long before the
+# target's health drops meaningfully). senior collapses to adult — size
+# doesn't shrink with age in this model.
+LIFE_STAGE_RANK = {
+    "baby": 0,
+    "infant": 1,
+    "juvenile": 2,
+    "adult": 3,
+    "senior": 3,
+}
+
+# Per-rank-gap damage multiplier when attacker is smaller than target.
+# Gap of 1 → 0.4×, gap of 2 → 0.16×, gap of 3 (baby vs adult) → 0.064×.
+SIZE_GAP_DAMAGE_FALLOFF = 0.4
+
+
+def life_stage_rank(stage) -> int:
+    return LIFE_STAGE_RANK.get(stage or "adult", 3)
+
+
+def attack_size_factor(attacker_stage, target_stage) -> float:
+    """Damage multiplier reflecting attacker vs target size class.
+
+    Returns 1.0 when attacker is at least as large as target (no penalty);
+    falls off exponentially when attacker is smaller, so a baby attacking an
+    adult inflicts ~6% of normal damage. This expresses the size mismatch as
+    a physics property of the world rather than a brain rule — any mob can
+    try to attack any other, but the attempt won't always be productive.
+    """
+    gap = life_stage_rank(target_stage) - life_stage_rank(attacker_stage)
+    if gap <= 0:
+        return 1.0
+    return SIZE_GAP_DAMAGE_FALLOFF ** gap
 # Default starter decision tree — full prey tree with breeding path
 DEFAULT_DECISION_TREE = {
     "root": "evaluate_state",
