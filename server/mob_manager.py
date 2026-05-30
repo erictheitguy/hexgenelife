@@ -67,27 +67,50 @@ class MobManager:
 
         cursor = self.db_conn.cursor()
 
-        # Founding predators spawn NEXT TO a live prey, not on a random tile.
-        # Predators only eat by hunting, so a seed predator dropped at a random
-        # tile far from the herd starves before it ever finds prey (observed:
-        # most founders died with 0 attacks). Spawning in the herd lets them
-        # start hunting immediately. Bred predators already inherit the parent's
-        # position via breed_mobs, so this only affects the initial seeds.
+        # Founding predators must spawn CLUSTERED, in prey range. Two reasons:
+        # (1) predators only eat by hunting, so a seed dropped on a random tile
+        # far from the herd starves before it finds prey; (2) scattered founders
+        # never meet a mate, so the population can't breed and dies out (run 32:
+        # 4/5 founders starved, the lone survivor lived to old age with 0
+        # offspring). So: the FIRST seed predator anchors next to a live prey;
+        # every later seed anchors on an already-placed predator — all founders
+        # end up together in a prey-dense spot, able to feed AND pair. Bred
+        # children ignore this (breed_mobs overrides their position to a parent).
         pos = None
         if mob_type == "predator":
+            anchor = None
+            # Cluster on an existing predator if one is already placed. No
+            # is_active filter: a just-seeded predator (is_active still 0) is a
+            # valid clustering anchor as soon as its row exists.
             cursor.execute(
                 "SELECT m.position FROM mobs m "
                 "LEFT JOIN mob_genes g ON m.mob_id = g.mob_id "
-                "WHERE m.mob_type = 'prey' AND m.is_active = 1 "
+                "WHERE m.mob_type = 'predator' "
                 "  AND (g.death IS NULL OR g.death = 0) "
+                "  AND m.position IS NOT NULL "
                 "ORDER BY RANDOM() LIMIT 1"
             )
-            prow = cursor.fetchone()
-            if prow and prow["position"]:
+            arow = cursor.fetchone()
+            if arow and arow["position"]:
+                anchor = arow["position"]
+            else:
+                # First founder: anchor next to a live prey so the whole cluster
+                # forms in the herd.
+                cursor.execute(
+                    "SELECT m.position FROM mobs m "
+                    "LEFT JOIN mob_genes g ON m.mob_id = g.mob_id "
+                    "WHERE m.mob_type = 'prey' AND m.is_active = 1 "
+                    "  AND (g.death IS NULL OR g.death = 0) "
+                    "ORDER BY RANDOM() LIMIT 1"
+                )
+                prow = cursor.fetchone()
+                if prow and prow["position"]:
+                    anchor = prow["position"]
+            if anchor:
                 try:
-                    ppos = json.loads(prow["position"])
-                    pos = {"x": float(ppos["x"]) + random.uniform(-3.0, 3.0),
-                           "y": float(ppos["y"]) + random.uniform(-3.0, 3.0)}
+                    apos = json.loads(anchor)
+                    pos = {"x": float(apos["x"]) + random.uniform(-3.0, 3.0),
+                           "y": float(apos["y"]) + random.uniform(-3.0, 3.0)}
                 except (json.JSONDecodeError, TypeError, KeyError):
                     pos = None
 
