@@ -674,14 +674,43 @@ def _next_run_number() -> int:
     return max(nums, default=0) + 1
 
 
+def _split_for_argv(text: str, limit: int = 60000) -> list[str]:
+    """Split text into contiguous chunks that reassemble exactly, each well
+    under the Linux single-argv byte cap (MAX_ARG_STRLEN ~128 KB). Breaks are
+    preferred at newline boundaries so a chunk never splits a line (and thus
+    never splits a multi-byte UTF-8 char, since '\\n' is a clean ASCII boundary).
+    """
+    parts: list[str] = []
+    start, n = 0, len(text)
+    while start < n:
+        end = min(start + limit, n)
+        if end < n:
+            nl = text.rfind("\n", start, end)
+            if nl > start:
+                end = nl + 1  # keep the newline with this chunk
+        parts.append(text[start:end])
+        start = end
+    return parts or [""]
+
+
 def _write_obsidian_report(run_num: int, report: str):
     note_name = f"run-{run_num}"
     note_path = f"Projects/HexGenLife/Runs/{note_name}.md"
+    # A full report can exceed the 128 KB single-argv limit, which makes
+    # `obsidian create content=<report>` fail with E2BIG (errno 7). Write the
+    # first chunk via create, then append the remainder chunk-by-chunk.
+    chunks = _split_for_argv(report)
     subprocess.run(
         ["obsidian", "create", f"name={note_name}",
-         f"path={note_path}", f"content={report}", "silent", "overwrite"],
+         f"path={note_path}", f"content={chunks[0]}", "silent", "overwrite"],
         capture_output=True, text=True
     )
+    for chunk in chunks[1:]:
+        subprocess.run(
+            ["obsidian", "append", f"path={note_path}",
+             f"content={chunk}", "inline"],
+            capture_output=True, text=True
+        )
     print(f"[sim_runner] Report written to Obsidian: {note_path}")
 
 
