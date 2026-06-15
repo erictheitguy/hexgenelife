@@ -10,7 +10,7 @@ Run a supervised HexGenLife simulation using the sim-runner skill.
 2. Run the sim runner script:
 
 ```bash
-.venv/bin/python .codex/skills/sim-runner/sim_runner_skill.py $ARGUMENTS
+.venv/bin/python .claude/skills/sim-runner/sim_runner_skill.py $ARGUMENTS
 ```
 
 The script prints live status lines every ~10 seconds during the run. Wait for it to finish — it will print `[sim_runner] Done. Run #N report saved.` when complete.

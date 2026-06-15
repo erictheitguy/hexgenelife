@@ -44,6 +44,53 @@ POLL_INTERVAL  = 10
 # Roughly 4 hex steps with HEX_RADIUS=5.0.
 SPREAD_NEAR_RADIUS = 20.0
 
+# ---------------------------------------------------------------------------
+# Verdict thresholds
+# ---------------------------------------------------------------------------
+# A run is graded along three independent axes (see _build_report):
+#   * mechanical    — did the simulation machinery run cleanly (ticks, no crashes)
+#   * ecological    — is it a healthy, balanced ecosystem (survival, breeding, health)
+#   * observability — are the clients/server reliable and quiet in the logs
+# The overall verdict is the worst of the three. Tune these without touching logic.
+
+# Number of trailing poll snapshots that define the "late run" window.
+LATE_RUN_SNAPSHOTS = 3
+# Late-run average prey health below this → ecological WARN (starving population).
+LATE_RUN_PREY_HEALTH_WARN = 20.0
+# Late-run average prey health below this → ecological FAIL (population doomed).
+LATE_RUN_PREY_HEALTH_FAIL = 8.0
+
+# Predator:prey alive-ratio thresholds (only when prey still alive).
+PRED_PREY_RATIO_WARN = 1.0   # predators >= prey → top-heavy, unstable
+PRED_PREY_RATIO_FAIL = 2.0   # predators dwarf prey → imminent prey collapse
+
+# Population collapse: final prey dropped to this fraction of the peak (and the
+# peak was a real bloom, i.e. >= COLLAPSE_MIN_PEAK) → ecological FAIL.
+PREY_COLLAPSE_FRACTION = 0.20
+COLLAPSE_MIN_PEAK = 5
+# Runaway predator growth: predator peak exceeds start by this multiple → FAIL.
+PRED_RUNAWAY_MULT = 4.0
+
+# Per-error-code counts (parsed from client.log) considered excessive.
+ERR_CODE_WARN = 25
+ERR_CODE_FAIL = 150
+
+# Client LOOK-timeout / reconnect counts over the whole run.
+LOOK_TIMEOUT_WARN = 3
+LOOK_TIMEOUT_FAIL = 20
+RECONNECT_WARN = 1
+RECONNECT_FAIL = 5
+CONN_FAIL_WARN = 1
+CONN_FAIL_FAIL = 10
+
+# Verdict severity ordering helper.
+_VERDICT_RANK = {"PASS": 0, "WARN": 1, "FAIL": 2}
+
+
+def _worse(a: str, b: str) -> str:
+    """Return the more severe of two verdict strings."""
+    return a if _VERDICT_RANK[a] >= _VERDICT_RANK[b] else b
+
 # Per-run state that persists across snapshots within a single run_sim() call.
 # Reset at the top of run_sim() so back-to-back runs in the same process stay clean.
 _run_state: dict = {
@@ -63,10 +110,11 @@ PREDATOR_ATTACK_RANGE = 3.0
 # ---------------------------------------------------------------------------
 
 def _load_skill(rel_path: str):
-    # Prefer Codex-local skills, but keep Kiro fallback for compatibility.
+    # Dependency skills live under .codex/skills (and may be mirrored under
+    # .claude/skills). Kiro is intentionally not consulted.
     candidates = [
         os.path.join(WORKSPACE, ".codex", "skills", rel_path),
-        os.path.join(WORKSPACE, ".kiro", "skills", rel_path),
+        os.path.join(WORKSPACE, ".claude", "skills", rel_path),
     ]
     full = next((c for c in candidates if os.path.exists(c)), None)
     if not full:
@@ -527,6 +575,47 @@ def _client_reliability_stats() -> dict:
     return stats
 
 
+def _error_code_tally() -> dict:
+    """Count server error codes seen in client.log.
+
+    Every server ERROR is logged by the client's state manager as
+    ``Server error [<CODE>]`` regardless of whether the client could attribute
+    it to a specific Mob, so that line is the authoritative per-error signal —
+    it includes the *unattributed* errors that never reach Mob.record_error
+    (the client logs those only as "Could not attribute error <CODE>").
+    Counting it means reliability grading sees the full error volume, not just
+    the attributed subset (see ADD-1 in the 2026-06-15 fix plan).
+
+    The older ``Action error recorded: <CODE>`` line is the attributed subset;
+    we fall back to it only for logs that predate the ``Server error`` line, so
+    no error is double-counted.
+    """
+    keys = ("MOB_NOT_FOUND", "TARGET_NOT_FOUND", "BREED_FAILED", "other")
+    tally = {k: 0 for k in keys}
+    fallback = {k: 0 for k in keys}
+    if not os.path.exists(CLIENT_LOG):
+        return tally
+    server_re = re.compile(r"Server error \[([^\]]+)\]")
+    action_re = re.compile(r"Action error recorded:\s+(\S+)")
+    saw_server_line = False
+    try:
+        with open(CLIENT_LOG, "r", errors="replace") as f:
+            for line in f:
+                m = server_re.search(line)
+                if m:
+                    saw_server_line = True
+                    code = m.group(1)
+                    tally[code if code in tally else "other"] += 1
+                    continue
+                m = action_re.search(line)
+                if m:
+                    code = m.group(1)
+                    fallback[code if code in fallback else "other"] += 1
+    except OSError:
+        pass
+    return tally if saw_server_line else fallback
+
+
 def _load_pressure_summary() -> str:
     """Call analyze_tick_metrics.summarize() on the server log and return a formatted block."""
     try:
@@ -731,6 +820,18 @@ def _build_report(
     reliability = _client_reliability_stats()
     perf = _performance_metrics()
     death_tally = _death_cause_tally()
+    err_tally = _error_code_tally()
+
+    # Late-run prey health: average prey_health_avg over the trailing snapshots
+    # where prey were still alive. None if prey were already extinct.
+    late_snaps = [
+        s for s in snapshots[-LATE_RUN_SNAPSHOTS:]
+        if s.get("prey_alive", 0) > 0
+    ]
+    late_prey_health = (
+        round(statistics.mean(s.get("prey_health_avg", 0) for s in late_snaps), 1)
+        if late_snaps else None
+    )
 
     issues = []
     recommendations = []
@@ -879,28 +980,184 @@ def _build_report(
             "reduce duplicate same-tick LOOK requests."
         )
 
+    # --- Late-run prey health ---
+    if late_prey_health is not None and late_prey_health < LATE_RUN_PREY_HEALTH_WARN:
+        issues.append(
+            f"Late-run prey health critically low (avg {late_prey_health} over last "
+            f"{len(late_snaps)} polls, threshold {LATE_RUN_PREY_HEALTH_WARN})."
+        )
+        recommendations.append(
+            "Prey are starving even where they survive. Increase EAT_GRASS energy reward "
+            "or grass regrowth, or reduce prey metabolism."
+        )
+
+    # --- Predator/prey ratio (top-heavy ecosystem) ---
+    prey_alive_f = final.get("prey_alive", 0)
+    pred_alive_f = final.get("pred_alive", 0)
+    pred_prey_ratio = (pred_alive_f / prey_alive_f) if prey_alive_f > 0 else None
+    if pred_prey_ratio is not None and pred_prey_ratio >= PRED_PREY_RATIO_WARN:
+        issues.append(
+            f"Predator/prey ratio top-heavy: {pred_alive_f} predators vs {prey_alive_f} prey "
+            f"(ratio {pred_prey_ratio:.1f})."
+        )
+        recommendations.append(
+            "Too many predators per prey — reduce starting predators, predator vision, or "
+            "predator breeding rate to keep the ecosystem stable."
+        )
+
+    # --- Population collapse (boom then crash) ---
+    prey_peak = max((s.get("prey_alive", 0) for s in snapshots), default=0)
+    if (prey_peak >= COLLAPSE_MIN_PEAK
+            and prey_alive_f > 0
+            and prey_alive_f <= prey_peak * PREY_COLLAPSE_FRACTION):
+        issues.append(
+            f"Prey population collapsed: peaked at {prey_peak}, ended at {prey_alive_f} "
+            f"(<= {int(PREY_COLLAPSE_FRACTION * 100)}% of peak)."
+        )
+        recommendations.append(
+            "Boom-bust crash with no recovery. Check grass regrowth rate vs herd size and "
+            "predator pressure timing."
+        )
+
+    # --- Runaway predator growth ---
+    start_pred = first.get("pred_total", 0) or 0
+    pred_peak = max((s.get("pred_alive", 0) for s in snapshots), default=0)
+    if start_pred > 0 and pred_peak >= start_pred * PRED_RUNAWAY_MULT:
+        issues.append(
+            f"Runaway predator growth: started {start_pred}, peaked at {pred_peak} "
+            f"({pred_peak / start_pred:.0f}× start)."
+        )
+        recommendations.append(
+            "Predators are out-breeding their prey supply. Raise the predator breeding energy "
+            "threshold or shorten predator lifespan."
+        )
+
+    # --- Excessive server-rejected action error codes ---
+    for code in ("MOB_NOT_FOUND", "TARGET_NOT_FOUND", "BREED_FAILED"):
+        cnt = err_tally.get(code, 0)
+        if cnt >= ERR_CODE_WARN:
+            sev = "Excessive" if cnt >= ERR_CODE_FAIL else "Elevated"
+            issues.append(f"{sev} {code} errors: {cnt} (client.log).")
+            recommendations.append(
+                f"High {code} count suggests clients act on stale state. Review the brain "
+                "target-selection / LOOK freshness path in client/brain_registry.py."
+            )
+
     if not issues:
         issues.append("No critical issues detected.")
         recommendations.append("Simulation appears healthy. Consider longer runs or larger worlds.")
 
-    # Pass/fail verdict
+    # -----------------------------------------------------------------------
+    # Three-axis verdict (mechanical / ecological / observability)
+    # Overall verdict is the worst of the three. See thresholds near top.
+    # -----------------------------------------------------------------------
     prey_survived  = final.get("prey_alive", 0) > 0
     pred_present   = final.get("pred_total", 0) > 0
     pred_survived  = final.get("pred_alive", 0) > 0 if pred_present else True
     prey_bred_any  = final.get("prey_bred", 0) > 0
     pred_bred_any  = final.get("pred_bred", 0) > 0 if pred_present else True
-    if prey_survived and pred_survived and prey_bred_any and pred_bred_any:
-        verdict = "PASS"
-        verdict_note = "Prey and predators both survived and bred."
-    elif not prey_survived:
-        verdict = "FAIL"
-        verdict_note = "Prey went extinct."
-    elif pred_present and not pred_survived:
-        verdict = "WARN"
-        verdict_note = "Predators went extinct."
+
+    # -- Mechanical: did the simulation machinery run cleanly? --
+    crash = any(re.search(r"Traceback|CRITICAL", l, re.IGNORECASE) for l in log_errors)
+    mech_verdict = "PASS"
+    mech_notes = []
+    if not snapshots:
+        mech_verdict, mech_notes = "FAIL", ["No snapshots captured — run never produced state."]
     else:
-        verdict = "WARN"
-        verdict_note = "No breeding occurred."
+        if final.get("tick", 0) < 50:
+            mech_verdict = _worse(mech_verdict, "FAIL")
+            mech_notes.append(f"Server barely ticked ({final.get('tick', 0)} ticks) — likely stalled.")
+        if crash:
+            mech_verdict = _worse(mech_verdict, "FAIL")
+            mech_notes.append("Traceback/CRITICAL found in logs.")
+        if perf.get("server_slow_tick_count", 0) > 0:
+            mech_verdict = _worse(mech_verdict, "WARN")
+            mech_notes.append(f"{perf['server_slow_tick_count']} slow server ticks.")
+        if log_errors and not crash:
+            mech_verdict = _worse(mech_verdict, "WARN")
+            mech_notes.append(f"{len(log_errors)} ERROR/WARNING log lines.")
+    if not mech_notes:
+        mech_notes.append("Server ticked cleanly with no crashes.")
+
+    # -- Ecological: is it a healthy, balanced ecosystem? --
+    eco_verdict = "PASS"
+    eco_notes = []
+    if not prey_survived:
+        eco_verdict = _worse(eco_verdict, "FAIL")
+        eco_notes.append("Prey went extinct.")
+    if (prey_peak >= COLLAPSE_MIN_PEAK and prey_survived
+            and prey_alive_f <= prey_peak * PREY_COLLAPSE_FRACTION):
+        eco_verdict = _worse(eco_verdict, "FAIL")
+        eco_notes.append(f"Prey population collapsed ({prey_peak}→{prey_alive_f}).")
+    if pred_prey_ratio is not None and pred_prey_ratio >= PRED_PREY_RATIO_FAIL:
+        eco_verdict = _worse(eco_verdict, "FAIL")
+        eco_notes.append(f"Predators dwarf prey (ratio {pred_prey_ratio:.1f}).")
+    elif pred_prey_ratio is not None and pred_prey_ratio >= PRED_PREY_RATIO_WARN:
+        eco_verdict = _worse(eco_verdict, "WARN")
+        eco_notes.append(f"Predator/prey ratio top-heavy ({pred_prey_ratio:.1f}).")
+    if start_pred > 0 and pred_peak >= start_pred * PRED_RUNAWAY_MULT:
+        eco_verdict = _worse(eco_verdict, "FAIL")
+        eco_notes.append(f"Runaway predator growth ({start_pred}→{pred_peak}).")
+    if late_prey_health is not None and late_prey_health < LATE_RUN_PREY_HEALTH_FAIL:
+        eco_verdict = _worse(eco_verdict, "FAIL")
+        eco_notes.append(f"Late-run prey health near-zero ({late_prey_health}).")
+    elif late_prey_health is not None and late_prey_health < LATE_RUN_PREY_HEALTH_WARN:
+        eco_verdict = _worse(eco_verdict, "WARN")
+        eco_notes.append(f"Late-run prey health low ({late_prey_health}).")
+    if prey_survived and not prey_bred_any:
+        eco_verdict = _worse(eco_verdict, "WARN")
+        eco_notes.append("No prey breeding occurred.")
+    if pred_present and not pred_survived:
+        eco_verdict = _worse(eco_verdict, "WARN")
+        eco_notes.append("Predators went extinct.")
+    if pred_present and pred_survived and not pred_bred_any:
+        eco_verdict = _worse(eco_verdict, "WARN")
+        eco_notes.append("No predator breeding occurred.")
+    if not eco_notes:
+        eco_notes.append("Prey and predators survived and bred in balance.")
+
+    # -- Observability / reliability: are clients & logs clean? --
+    obs_verdict = "PASS"
+    obs_notes = []
+    lt = reliability.get("look_timeouts", 0)
+    rc = reliability.get("forced_reconnect", 0)
+    cf = reliability.get("connection_failed", 0)
+    if lt >= LOOK_TIMEOUT_FAIL:
+        obs_verdict = _worse(obs_verdict, "FAIL"); obs_notes.append(f"{lt} LOOK timeouts.")
+    elif lt >= LOOK_TIMEOUT_WARN:
+        obs_verdict = _worse(obs_verdict, "WARN"); obs_notes.append(f"{lt} LOOK timeouts.")
+    if rc >= RECONNECT_FAIL:
+        obs_verdict = _worse(obs_verdict, "FAIL"); obs_notes.append(f"{rc} forced reconnects.")
+    elif rc >= RECONNECT_WARN:
+        obs_verdict = _worse(obs_verdict, "WARN"); obs_notes.append(f"{rc} forced reconnects.")
+    if cf >= CONN_FAIL_FAIL:
+        obs_verdict = _worse(obs_verdict, "FAIL"); obs_notes.append(f"{cf} connection failures.")
+    elif cf >= CONN_FAIL_WARN:
+        obs_verdict = _worse(obs_verdict, "WARN"); obs_notes.append(f"{cf} connection failures.")
+    for code in ("MOB_NOT_FOUND", "TARGET_NOT_FOUND", "BREED_FAILED"):
+        cnt = err_tally.get(code, 0)
+        if cnt >= ERR_CODE_FAIL:
+            obs_verdict = _worse(obs_verdict, "FAIL"); obs_notes.append(f"{cnt} {code}.")
+        elif cnt >= ERR_CODE_WARN:
+            obs_verdict = _worse(obs_verdict, "WARN"); obs_notes.append(f"{cnt} {code}.")
+    if (perf.get("client_tick_ms_p95", 0) >= 1000
+            or perf.get("client_look_ms_p95", 0) >= 1000):
+        obs_verdict = _worse(obs_verdict, "WARN"); obs_notes.append("High client tick/LOOK latency (p95 ≥ 1s).")
+    if not obs_notes:
+        obs_notes.append("Clients reliable; logs quiet.")
+
+    # -- Overall = worst of the three axes --
+    verdict = _worse(_worse(mech_verdict, eco_verdict), obs_verdict)
+    verdict_note = (
+        f"mechanical={mech_verdict}, ecological={eco_verdict}, observability={obs_verdict}"
+    )
+    verdict_breakdown_md = (
+        "| Axis | Verdict | Notes |\n"
+        "|------|---------|-------|\n"
+        f"| Mechanical | {mech_verdict} | {'; '.join(mech_notes)} |\n"
+        f"| Ecological | {eco_verdict} | {'; '.join(eco_notes)} |\n"
+        f"| Observability / Reliability | {obs_verdict} | {'; '.join(obs_notes)} |\n"
+    )
 
     snap_hdr = (
         "| tick | prey_alive | prey_adult | prey_bred | pred_alive | pred_adult | pred_bred "
@@ -1050,6 +1307,9 @@ run: {run_num}
 timestamp: {timestamp}
 duration_seconds: {round(duration_s)}
 verdict: {verdict}
+verdict_mechanical: {mech_verdict}
+verdict_ecological: {eco_verdict}
+verdict_observability: {obs_verdict}
 ---
 
 # HexGenLife Sim Run {run_num}
@@ -1057,6 +1317,10 @@ verdict: {verdict}
 **Date:** {timestamp}
 **Duration:** {round(duration_s / 60, 1)} min
 **Verdict:** {verdict} — {verdict_note}
+
+## Verdict Breakdown
+
+{verdict_breakdown_md}
 
 ## Phases
 
@@ -1083,6 +1347,8 @@ verdict: {verdict}
 | Predator max generation | {final.get('pred_max_gen', 0)} |
 | Hunt success rate | {hunt_pct}% ({eat_mob_ev} kills / {attack_ev} attacks) |
 | Prey health avg/min/max | {final.get('prey_health_avg', 0)} / {final.get('prey_health_min', 0)} / {final.get('prey_health_max', 0)} |
+| Prey health late-run avg (last {LATE_RUN_SNAPSHOTS} polls) | {late_prey_health if late_prey_health is not None else 'n/a (prey extinct)'} |
+| Predator/prey alive ratio | {f'{pred_prey_ratio:.2f}' if pred_prey_ratio is not None else 'n/a'} |
 | Prey hunger avg | {final.get('prey_hunger_avg', 0)} |
 | Prey energy avg | {final.get('prey_energy_avg', 0)} |
 | Prey fat avg | {final.get('prey_fat_avg', 0)} |
@@ -1094,6 +1360,10 @@ verdict: {verdict}
 | Client connection failures | {reliability.get('connection_failed', 0)} |
 | Client LOOK timeouts | {reliability.get('look_timeouts', 0)} |
 | Client forced reconnects | {reliability.get('forced_reconnect', 0)} |
+| Action errors: MOB_NOT_FOUND | {err_tally.get('MOB_NOT_FOUND', 0)} |
+| Action errors: TARGET_NOT_FOUND | {err_tally.get('TARGET_NOT_FOUND', 0)} |
+| Action errors: BREED_FAILED | {err_tally.get('BREED_FAILED', 0)} |
+| Action errors: other | {err_tally.get('other', 0)} |
 | Server tick samples (log) | {perf.get('server_tick_samples', 0)} |
 | Server tick ms avg / p95 / max | {perf.get('server_tick_ms_avg', 0)} / {perf.get('server_tick_ms_p95', 0)} / {perf.get('server_tick_ms_max', 0)} |
 | Server slow ticks / max slow ms | {perf.get('server_slow_tick_count', 0)} / {perf.get('server_slow_tick_ms_max', 0)} |
