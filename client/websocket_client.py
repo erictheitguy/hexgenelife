@@ -84,6 +84,28 @@ class HexGenLifeClient:
             logger.error(f"[{self.client_id}] Connection failed: {e}")
             return False
 
+    def retire_mob(self, mob_id: str, reason: str = "") -> None:
+        """Remove a mob from all per-mob bookkeeping so the autonomous loop
+        stops acting for it. Safe to call when the mob is absent or already
+        retired (idempotent). Fixes COR-2/ADD-3: a server-removed mob
+        (eaten / not found) must be retired from mob_objects, not just from
+        the StateManager's _state["mobs"].
+        """
+        existed = mob_id in self.mob_objects
+        self.mob_objects.pop(mob_id, None)
+        self._look_events.pop(mob_id, None)
+        self._stale_perception.pop(mob_id, None)
+        self._look_timeout_streak.pop(mob_id, None)
+        self._last_sent_action.pop(mob_id, None)
+        self._look_in_flight.discard(mob_id)
+        if self._current_acting_mob == mob_id:
+            self._current_acting_mob = None
+        if existed:
+            logger.info(
+                f"[{self.client_id}] Retired mob {mob_id}"
+                f"{f' (reason: {reason})' if reason else ''}."
+            )
+
     async def listen(self):
         """Listens for incoming messages and updates client state."""
         try:
@@ -125,6 +147,14 @@ class HexGenLifeClient:
                         self.mob_objects[child_id] = child_mob
                         self._look_events[child_id] = asyncio.Event()
                         logger.info(f"[{self.client_id}] Adopted child mob {child_id} (parent={parent_a_id})")
+                elif msg_type == "MOB_EATEN":
+                    # Server removed the eaten mob; if we own it, retire it so the
+                    # autonomous loop stops issuing actions for a ghost (COR-2).
+                    self.state_manager.handle_incoming_message(message)
+                    payload = message.get("payload", {})
+                    target_id = payload.get("targetId")
+                    if target_id and target_id in self.mob_objects:
+                        self.retire_mob(target_id, reason="MOB_EATEN")
                 else:
                     self.state_manager.handle_incoming_message(message)
                     # Update mob objects with MOB_UPDATE data
@@ -280,6 +310,11 @@ class HexGenLifeClient:
                 continue
 
             for mob_id in alive_mobs:
+                # A mob can be retired mid-tick (e.g. MOB_EATEN/MOB_NOT_FOUND
+                # processed by listen() between the LOOK and action phases);
+                # skip any since-removed mob so we never act for a ghost.
+                if mob_id not in self.mob_objects:
+                    continue
                 mob = self.mob_objects[mob_id]
 
                 # Step 2: Brain thinks and produces an action
@@ -383,6 +418,10 @@ class HexGenLifeClient:
                 f"[{self.client_id}] Error {error_code} attributed to {mob_id} "
                 f"(action={last_action.get('type') if last_action else None})"
             )
+            # The server no longer knows this mob; retire it so we stop acting
+            # for a ghost (ADD-3).
+            if error_code == "MOB_NOT_FOUND":
+                self.retire_mob(mob_id, reason="MOB_NOT_FOUND")
         else:
             logger.warning(f"[{self.client_id}] Could not attribute error {error_code} to any mob.")
 
