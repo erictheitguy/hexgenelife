@@ -209,7 +209,9 @@ class TestAsyncHandlers(unittest.IsolatedAsyncioTestCase):
             mock_err.assert_awaited()
 
     async def test_handle_move_mob_updates_position(self):
-        """_handle_move_mob must update position in DB."""
+        """_handle_move_mob caps movement at the mob's speed for a far target."""
+        import math
+
         self.server._ensure_client_mob("mover")
         mob_id = "mob_mover"
         # Fix starting position so test is deterministic
@@ -218,15 +220,61 @@ class TestAsyncHandlers(unittest.IsolatedAsyncioTestCase):
                        (json.dumps({"x": 0, "y": 0}), mob_id))
         self.server.db_conn.commit()
 
+        # Read the mob's actual speed so expectations don't hardcode magic numbers.
+        speed = self.server.mob_manager.get_mob_physical(mob_id)["speed"]
+
         mock_ws = AsyncMock()
         await self.server._handle_move_mob(
             {"mobId": mob_id, "targetLocation": {"x": 5, "y": 7}}, mock_ws
         )
         cursor.execute("SELECT position FROM mobs WHERE mob_id = ?", (mob_id,))
         pos = json.loads(cursor.fetchone()[0])
-        # Mob moves the full requested distance regardless of energy
-        self.assertAlmostEqual(pos["x"], 5.0, places=1)
-        self.assertAlmostEqual(pos["y"], 7.0, places=1)
+
+        # The target (5,7) is much farther than `speed` units away, so the mob
+        # only advances `speed` units along the direction vector. The handler
+        # rounds the result to integer coords (validator requires integers).
+        dist = math.hypot(5, 7)
+        self.assertGreater(dist, speed)  # sanity: target really is "far"
+        expected_x = round(5 / dist * speed)
+        expected_y = round(7 / dist * speed)
+        self.assertAlmostEqual(pos["x"], expected_x, places=1)
+        self.assertAlmostEqual(pos["y"], expected_y, places=1)
+
+        # The Euclidean distance actually travelled must not exceed the cap
+        # (rounding can only ever bring it at/under one full speed step).
+        moved = math.hypot(pos["x"], pos["y"])
+        self.assertLessEqual(moved, speed + 0.5)
+
+    async def test_handle_move_mob_within_speed_range_is_exact(self):
+        """When the target is within `speed` units, the mob arrives exactly."""
+        import math
+
+        self.server._ensure_client_mob("stepper")
+        mob_id = "mob_stepper"
+        cursor = self.server.db_conn.cursor()
+        cursor.execute("UPDATE mobs SET position = ? WHERE mob_id = ?",
+                       (json.dumps({"x": 0, "y": 0}), mob_id))
+        self.server.db_conn.commit()
+
+        speed = self.server.mob_manager.get_mob_physical(mob_id)["speed"]
+        # Choose an integer target whose distance from (0,0) is <= speed.
+        # A single axis step of 1 is distance 1.0, which is within the default
+        # speed; if speed were smaller, fall back to staying put (distance 0).
+        target_x = 1 if speed >= 1.0 else 0
+        target_y = 0
+        dist = math.hypot(target_x, target_y)
+        self.assertLessEqual(dist, speed)  # sanity: target is within reach
+
+        mock_ws = AsyncMock()
+        await self.server._handle_move_mob(
+            {"mobId": mob_id, "targetLocation": {"x": target_x, "y": target_y}},
+            mock_ws,
+        )
+        cursor.execute("SELECT position FROM mobs WHERE mob_id = ?", (mob_id,))
+        pos = json.loads(cursor.fetchone()[0])
+        # Within speed range → exact arrival at the requested target.
+        self.assertEqual(pos["x"], target_x)
+        self.assertEqual(pos["y"], target_y)
 
     async def test_handle_move_mob_error_on_unknown_mob(self):
         """_handle_move_mob must reply with ERROR when mob doesn't exist."""
