@@ -461,6 +461,21 @@ class MobInteractions:
                                          f"Target {target_id} not found.")
             return
 
+        # A corpse stays is_active=1 for several ticks so predators can eat the
+        # carcass, so mob_exists() still returns true. Bail out before applying
+        # any damage if the target is already dead — otherwise every subsequent
+        # attack would re-run the death block (rewriting the death timestamp,
+        # recomputing fitness, re-applying carcass meat and re-logging the
+        # death), corrupting death-cause telemetry. Predators should route to
+        # EAT_MOB instead.
+        t_genes = self.db_conn.cursor()
+        t_genes.execute("SELECT death FROM mob_genes WHERE mob_id = ?", (target_id,))
+        death_row = t_genes.fetchone()
+        if death_row is not None and death_row["death"]:
+            await self.server.send_error(websocket, "TARGET_ALREADY_DEAD",
+                                         f"Target {target_id} is already dead.")
+            return
+
         phys = self.mob_manager.get_mob_physical(mob_id)
         t_phys = self.mob_manager.get_mob_physical(target_id)
         attack = phys.get("attack_power", 1.0)
