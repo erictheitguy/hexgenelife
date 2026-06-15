@@ -180,13 +180,15 @@ class MobInteractions:
         mob_id = payload.get("mobId")
         if not mob_id or not self.mob_manager.mob_exists(mob_id):
             await self.server.send_error(websocket, "MOB_NOT_FOUND",
-                                         f"Mob {mob_id} not found.")
+                                         f"Mob {mob_id} not found.",
+                                         {"mobId": mob_id, "commandType": "LOOK"})
             return
 
         pos = self._get_position(mob_id)
         if pos is None:
             await self.server.send_error(websocket, "NO_POSITION",
-                                         f"Mob {mob_id} has no position.")
+                                         f"Mob {mob_id} has no position.",
+                                         {"mobId": mob_id, "commandType": "LOOK"})
             return
 
         phys = self.mob_manager.get_mob_physical(mob_id)
@@ -338,7 +340,8 @@ class MobInteractions:
 
         if not mob_id or not self.mob_manager.mob_exists(mob_id):
             await self.server.send_error(websocket, "MOB_NOT_FOUND",
-                                         f"Mob {mob_id} not found.")
+                                         f"Mob {mob_id} not found.",
+                                         {"mobId": mob_id, "commandType": "MOVE_MOB"})
             return
 
         pos = self._get_position(mob_id) or {"x": 0.0, "y": 0.0}
@@ -393,14 +396,16 @@ class MobInteractions:
         mob_id = payload.get("mobId")
         if not mob_id or not self.mob_manager.mob_exists(mob_id):
             await self.server.send_error(websocket, "MOB_NOT_FOUND",
-                                         f"Mob {mob_id} not found.")
+                                         f"Mob {mob_id} not found.",
+                                         {"mobId": mob_id, "commandType": "EAT_GRASS"})
             return
 
         pos = self._get_position(mob_id) or {"x": 0.0, "y": 0.0}
         tile = self._nearest_tile(pos["x"], pos["y"])
         if tile is None or tile["Grass"] <= 0:
             await self.server.send_error(websocket, "NO_GRASS",
-                                         "No grass available at current tile.")
+                                         "No grass available at current tile.",
+                                         {"mobId": mob_id, "commandType": "EAT_GRASS"})
             return
 
         phys = self.mob_manager.get_mob_physical(mob_id)
@@ -454,11 +459,15 @@ class MobInteractions:
 
         if not mob_id or not self.mob_manager.mob_exists(mob_id):
             await self.server.send_error(websocket, "MOB_NOT_FOUND",
-                                         f"Mob {mob_id} not found.")
+                                         f"Mob {mob_id} not found.",
+                                         {"mobId": mob_id, "targetId": target_id,
+                                          "commandType": "ATTACK_MOB"})
             return
         if not target_id or not self.mob_manager.mob_exists(target_id):
             await self.server.send_error(websocket, "TARGET_NOT_FOUND",
-                                         f"Target {target_id} not found.")
+                                         f"Target {target_id} not found.",
+                                         {"mobId": mob_id, "targetId": target_id,
+                                          "commandType": "ATTACK_MOB"})
             return
 
         # A corpse stays is_active=1 for several ticks so predators can eat the
@@ -473,7 +482,9 @@ class MobInteractions:
         death_row = t_genes.fetchone()
         if death_row is not None and death_row["death"]:
             await self.server.send_error(websocket, "TARGET_ALREADY_DEAD",
-                                         f"Target {target_id} is already dead.")
+                                         f"Target {target_id} is already dead.",
+                                         {"mobId": mob_id, "targetId": target_id,
+                                          "commandType": "ATTACK_MOB"})
             return
 
         phys = self.mob_manager.get_mob_physical(mob_id)
@@ -559,11 +570,15 @@ class MobInteractions:
 
         if not mob_id or not self.mob_manager.mob_exists(mob_id):
             await self.server.send_error(websocket, "MOB_NOT_FOUND",
-                                         f"Mob {mob_id} not found.")
+                                         f"Mob {mob_id} not found.",
+                                         {"mobId": mob_id, "targetId": target_id,
+                                          "commandType": "EAT_MOB"})
             return
         if not target_id or not self.mob_manager.mob_exists(target_id):
             await self.server.send_error(websocket, "TARGET_NOT_FOUND",
-                                         f"Target {target_id} not found.")
+                                         f"Target {target_id} not found.",
+                                         {"mobId": mob_id, "targetId": target_id,
+                                          "commandType": "EAT_MOB"})
             return
 
         # Target must be dead
@@ -572,7 +587,9 @@ class MobInteractions:
         row = t_genes.fetchone()
         if row is None or not row["death"]:
             await self.server.send_error(websocket, "TARGET_NOT_DEAD",
-                                         "Cannot eat a living mob.")
+                                         "Cannot eat a living mob.",
+                                         {"mobId": mob_id, "targetId": target_id,
+                                          "commandType": "EAT_MOB"})
             return
 
         cursor = self.db_conn.cursor()
@@ -595,7 +612,9 @@ class MobInteractions:
             if hasattr(self.server, "remove_from_spatial_index"):
                 self.server.remove_from_spatial_index(target_id)
             await self.server.send_error(websocket, "CARCASS_EMPTY",
-                                         "Carcass has no meat left.")
+                                         "Carcass has no meat left.",
+                                         {"mobId": mob_id, "targetId": target_id,
+                                          "commandType": "EAT_MOB"})
             return
 
         # One bite removes BITE_MEAT_DRAIN from the carcass (or all that's left
@@ -644,17 +663,23 @@ class MobInteractions:
 
         if not mob_id or not self.mob_manager.mob_exists(mob_id):
             await self.server.send_error(websocket, "MOB_NOT_FOUND",
-                                         f"Mob {mob_id} not found.")
+                                         f"Mob {mob_id} not found.",
+                                         {"mobId": mob_id, "targetId": target_id,
+                                          "commandType": "BREED_MOB"})
             return
         if not target_id or not self.mob_manager.mob_exists(target_id):
             await self.server.send_error(websocket, "TARGET_NOT_FOUND",
-                                         f"Target {target_id} not found.")
+                                         f"Target {target_id} not found.",
+                                         {"mobId": mob_id, "targetId": target_id,
+                                          "commandType": "BREED_MOB"})
             return
 
         child_id = self.breed_mobs(mob_id, target_id)
         if child_id is None:
             await self.server.send_error(websocket, "BREED_FAILED",
-                                         "Breeding conditions not met.")
+                                         "Breeding conditions not met.",
+                                         {"mobId": mob_id, "targetId": target_id,
+                                          "commandType": "BREED_MOB"})
             return
 
         await self.server.broadcast("MOB_BRED", {

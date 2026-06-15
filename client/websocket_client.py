@@ -404,19 +404,39 @@ class HexGenLifeClient:
         return m.group(1) if m else None
 
     def _handle_error_feedback(self, payload: dict):
-        """Attribute a server ERROR to the responsible mob and record it in memory."""
+        """Attribute a server ERROR to the responsible mob and record it in memory.
+
+        Attribution priority (COR-3):
+          (a) structured ``payload["mobId"]`` emitted by the server,
+          (b) legacy regex parse of the human error message,
+          (c) ``self._current_acting_mob`` fallback.
+        Structured ``targetId``/``commandType`` are used for context when present.
+        """
         error_code = payload.get("errorCode", "UNKNOWN")
         error_msg = payload.get("errorMessage", "")
-        mob_id = self._extract_mob_id_from_error(error_msg) or self._current_acting_mob
+        mob_id = (
+            payload.get("mobId")
+            or self._extract_mob_id_from_error(error_msg)
+            or self._current_acting_mob
+        )
         if error_code in {"SERVER_BUSY", "ACTION_LIMIT_EXCEEDED"}:
             self._throttle_ticks = max(self._throttle_ticks, 6)
             logger.warning(f"[{self.client_id}] Applying client throttle due to {error_code}.")
         if mob_id and mob_id in self.mob_objects:
             last_action = self._last_sent_action.get(mob_id)
+            # Prefer the server's structured commandType for the recorded action
+            # context when we have no locally-tracked last action for this mob.
+            command_type = payload.get("commandType")
+            target_id = payload.get("targetId")
+            if last_action is None and command_type:
+                last_action = {"type": command_type, "payload": {}}
+                if target_id:
+                    last_action["payload"]["targetId"] = target_id
             self.mob_objects[mob_id].record_error(error_code, last_action)
             logger.debug(
                 f"[{self.client_id}] Error {error_code} attributed to {mob_id} "
-                f"(action={last_action.get('type') if last_action else None})"
+                f"(action={last_action.get('type') if last_action else None}, "
+                f"commandType={command_type}, targetId={target_id})"
             )
             # The server no longer knows this mob; retire it so we stop acting
             # for a ghost (ADD-3).

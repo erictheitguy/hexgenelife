@@ -328,10 +328,13 @@ class GameServer:
                             )
                         self._queue_overflow_drops += 1
                         self._tick_drop_queue_full[command_type] += 1
+                        busy_extra = {"retryAfterMs": 500, "commandType": command_type}
+                        if target_mob_id:
+                            busy_extra["mobId"] = target_mob_id
                         await self.send_error(
                             websocket, "SERVER_BUSY",
                             "Server command queue is full. Back off and retry.",
-                            {"retryAfterMs": 500}
+                            busy_extra
                         )
 
                 except json.JSONDecodeError:
@@ -407,9 +410,13 @@ class GameServer:
                     self._tick_rej_by_client[client_id] += 1
                 if target_mob_id:
                     self._tick_rej_by_mob[target_mob_id] += 1
+                limit_extra = {"commandType": cmd}
+                if target_mob_id:
+                    limit_extra["mobId"] = target_mob_id
                 await self.send_error(
                     entry["websocket"], "ACTION_LIMIT_EXCEEDED",
-                    f"Mob {target_mob_id} action evicted after {age} ticks deferred."
+                    f"Mob {target_mob_id} action evicted after {age} ticks deferred.",
+                    limit_extra
                 )
             else:
                 self._pending_actions.append({
