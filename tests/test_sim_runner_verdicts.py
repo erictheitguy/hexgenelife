@@ -19,6 +19,7 @@ See: Projects/HexGenLife/Plans/2026-06-15-adversarial-review-fix-plan.md (Phase 
 import importlib.util
 import os
 import re
+import subprocess
 
 import pytest
 
@@ -116,6 +117,22 @@ def test_frontmatter_exposes_three_axes(mod):
         _snap(tick=900, prey_alive=10, prey_total=12, prey_bred=4, prey_health_avg=80),
     ])
     assert {"verdict", "verdict_mechanical", "verdict_ecological", "verdict_observability"} <= v.keys()
+
+
+def test_report_chunking_respects_utf8_byte_limit(mod):
+    text = ("alpha\n" * 3) + ("🙂" * 12) + "\n" + ("βeta\n" * 3)
+    parts = mod._split_for_argv(text, limit=16)
+    assert "".join(parts) == text
+    assert all(len(part.encode("utf-8")) <= 16 for part in parts)
+
+
+def test_obsidian_write_failure_is_not_silent(mod, monkeypatch):
+    def fail_run(args, capture_output, text):
+        return subprocess.CompletedProcess(args, 2, stdout="", stderr="boom")
+
+    monkeypatch.setattr(mod.subprocess, "run", fail_run)
+    with pytest.raises(RuntimeError, match="obsidian failed to create"):
+        mod._write_obsidian_report(42, "report body")
 
 
 # ---------------------------------------------------------------------------

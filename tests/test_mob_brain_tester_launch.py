@@ -16,15 +16,18 @@ from hypothesis import given, settings, assume
 from hypothesis import strategies as st
 
 # ---------------------------------------------------------------------------
-# Load launch_helpers from .kiro/ (not a Python package)
+# Load launch_helpers from .codex/ if the optional mob brain tester skill is installed.
 # ---------------------------------------------------------------------------
 _skill_path = (
     pathlib.Path(__file__).parent.parent
-    / ".kiro"
+    / ".codex"
     / "skills"
     / "mob_brain_tester"
     / "launch_helpers.py"
 )
+if not _skill_path.exists():
+    pytest.skip("optional mob_brain_tester Codex skill is not installed", allow_module_level=True)
+
 _spec = importlib.util.spec_from_file_location("launch_helpers", _skill_path)
 launch_helpers = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(launch_helpers)

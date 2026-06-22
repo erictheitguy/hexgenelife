@@ -8,15 +8,19 @@ import tempfile
 import pathlib
 
 # ---------------------------------------------------------------------------
-# Load db_skill from .kiro/ (not a Python package, so use importlib)
+# Load db_skill from .codex/ if the optional mob brain tester skill is installed.
 # ---------------------------------------------------------------------------
 _skill_path = (
     pathlib.Path(__file__).parent.parent
-    / ".kiro"
+    / ".codex"
     / "skills"
     / "mob_brain_tester"
     / "db_skill.py"
 )
+if not _skill_path.exists():
+    import pytest
+    pytest.skip("optional mob_brain_tester Codex skill is not installed", allow_module_level=True)
+
 _spec = importlib.util.spec_from_file_location("db_skill", _skill_path)
 db_skill = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(db_skill)

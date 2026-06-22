@@ -13,16 +13,19 @@ import shutil
 import pytest
 
 # ---------------------------------------------------------------------------
-# Load log_skill via importlib
+# Load log_skill from .codex/ if the optional mob brain tester skill is installed.
 # ---------------------------------------------------------------------------
 _SKILL_PATH = os.path.join(
     os.path.dirname(__file__),
     "..",
-    ".kiro",
+    ".codex",
     "skills",
     "mob_brain_tester",
     "log_skill.py",
 )
+
+if not os.path.exists(_SKILL_PATH):
+    pytest.skip("optional mob_brain_tester Codex skill is not installed", allow_module_level=True)
 
 _spec = importlib.util.spec_from_file_location("log_skill", _SKILL_PATH)
 log_skill = importlib.util.module_from_spec(_spec)

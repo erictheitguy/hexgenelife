@@ -7,15 +7,18 @@ import sys
 import pytest
 
 # ---------------------------------------------------------------------------
-# Load test_runner_skill from .kiro/ (not a Python package)
+# Load test_runner_skill from .codex/ if the optional mob brain tester skill is installed.
 # ---------------------------------------------------------------------------
 _skill_path = (
     pathlib.Path(__file__).parent.parent
-    / ".kiro"
+    / ".codex"
     / "skills"
     / "mob_brain_tester"
     / "test_runner_skill.py"
 )
+if not _skill_path.exists():
+    pytest.skip("optional mob_brain_tester Codex skill is not installed", allow_module_level=True)
+
 _spec = importlib.util.spec_from_file_location("test_runner_skill", _skill_path)
 test_runner_skill = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(test_runner_skill)
