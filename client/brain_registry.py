@@ -701,27 +701,20 @@ def evaluate_flee(matrix, memory, outputs, mob_state):
 
 @register("evaluate_breed_energy")
 def evaluate_breed_energy(matrix, memory, outputs, mob_state):
-    """Gate breeding path — check energy and life stage.
+    """Gate breeding path using live fitness when available.
 
-    Routes to first output (find_partner) if energy >= 70 and life_stage == "adult".
-    Routes to second output (evaluate_danger_check) otherwise.
+    Routes to first output (find_partner) when the mob is potentially
+    breedable. find_partner and the server remain authoritative.
     Passes matrix through unchanged.
     """
     energy = mob_state.get("energy", 0)
     life_stage = mob_state.get("life_stage", "")
     health = mob_state.get("health", 100)
-
-    mob_type = mob_state.get("mob_type", "prey")
-    fat = mob_state.get("fat", 0)
-    # Predators need stronger reserves and recent feeding before breeding.
-    if mob_type == "predator":
-        ate_recently = bool(memory.get("eat_target")) or mob_state.get("hunger", 0) < 10
-        # Mirror server's MIN_BREED_ENERGY_PREDATOR so the brain doesn't burn
-        # actions on BREED_MOB the server rejects, and so predators only breed
-        # on genuine surplus — damping the overshoot.
-        can_breed = energy >= MIN_BREED_ENERGY_PREDATOR and fat >= 25 and health >= 90 and life_stage == "adult" and ate_recently
+    fitness = mob_state.get("fitnessScore")
+    if fitness is not None:
+        can_breed = fitness > 0.0
     else:
-        can_breed = energy >= 45 and health >= 80 and life_stage == "adult"
+        can_breed = energy >= MIN_BREED_ENERGY and health >= 80 and life_stage == "adult"
 
     if can_breed:
         next_node = outputs[0] if outputs else None

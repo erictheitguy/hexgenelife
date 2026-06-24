@@ -475,6 +475,17 @@ class TestPBTEvaluateBreedEnergyHighEnergy(unittest.TestCase):
         self.assertEqual(result["next"], outputs[0])
         self.assertEqual(result["matrix"], matrix)
 
+    def test_fitness_score_zero_routes_to_second_output(self):
+        func = get_function("evaluate_breed_energy")
+        memory = {}
+        mob_state = _mob_state(life_stage="adult", energy=100.0)
+        mob_state["fitnessScore"] = 0.0
+        outputs = ["find_partner", "evaluate_movement"]
+
+        result = func([], memory, outputs, mob_state)
+
+        self.assertEqual(result["next"], outputs[1])
+
 
 # ---------------------------------------------------------------------------
 # 5.12 — PBT Property 7: evaluate_breed_energy routes ineligible mobs to danger check
@@ -482,12 +493,12 @@ class TestPBTEvaluateBreedEnergyHighEnergy(unittest.TestCase):
 
 @st.composite
 def ineligible_mob_state(draw):
-    """Generate mob_state where energy < 45 OR life_stage != 'adult' OR health < 80."""
+    """Generate mob_state where energy < MIN_BREED_ENERGY OR life_stage != 'adult' OR health < 80."""
     ineligible_type = draw(st.integers(min_value=0, max_value=2))
     
     if ineligible_type == 0:
         # No energy and no fat
-        energy = draw(st.floats(min_value=-10.0, max_value=44.9, allow_nan=False, allow_infinity=False))
+        energy = draw(st.floats(min_value=-10.0, max_value=39.9, allow_nan=False, allow_infinity=False))
         fat = draw(st.floats(min_value=-10.0, max_value=0.0, allow_nan=False, allow_infinity=False))
         life_stage = "adult"
         health = 100.0

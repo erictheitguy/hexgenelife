@@ -88,6 +88,14 @@ BREED_ENERGY_COST_PREDATOR = 40.0
 MIN_BREED_ENERGY_PREDATOR = 65.0
 
 
+def _is_breedable_health(health: dict) -> bool:
+    return (
+        health.get("life_stage", "adult") == "adult"
+        and health.get("energy", 0.0) >= MIN_BREED_ENERGY
+        and health.get("health", 0.0) >= 80.0
+    )
+
+
 class MobInteractions:
     def __init__(self, server, db_conn: sqlite3.Connection, mob_manager):
         self.server = server
@@ -118,6 +126,35 @@ class MobInteractions:
             "UPDATE mob_health SET fat = MAX(fat, ?) WHERE mob_id = ?",
             (CARCASS_MEAT_BASE, mob_id),
         )
+
+    def _offspring_count(self, mob_id: str) -> int:
+        cursor = self.db_conn.cursor()
+        return cursor.execute(
+            "SELECT COUNT(*) FROM family_tree WHERE parent_a_id=? OR parent_b_id=?",
+            (mob_id, mob_id),
+        ).fetchone()[0]
+
+    def _live_fitness_score(self, health: dict, offspring_count: int = 0) -> float:
+        if not _is_breedable_health(health):
+            return 0.0
+        energy_quality = min(1.0, health.get("energy", 0.0) / 100.0)
+        health_quality = min(1.0, health.get("health", 0.0) / 100.0)
+        return round(max(0.0001, energy_quality * health_quality * (1 + offspring_count)), 4)
+
+    def _finalize_death(self, mob_id: str, death_ts: float) -> float:
+        cursor = self.db_conn.cursor()
+        cursor.execute(
+            "UPDATE mob_genes SET death = ? WHERE mob_id = ? AND (death IS NULL OR death = 0)",
+            (death_ts, mob_id),
+        )
+        self._apply_carcass_meat(mob_id)
+        if hasattr(self.server, "remove_from_spatial_index"):
+            self.server.remove_from_spatial_index(mob_id)
+        row = cursor.execute(
+            "SELECT COALESCE(fitnessScore, 0.0) AS fitnessScore FROM mob_genes WHERE mob_id = ?",
+            (mob_id,),
+        ).fetchone()
+        return row["fitnessScore"] if row else 0.0
 
     def _get_position(self, mob_id: str) -> dict | None:
         row = self._get_mob_row(mob_id)
@@ -229,7 +266,7 @@ class MobInteractions:
         # avoids N per-mob SELECTs inside the detection loop below.
         if nearby_ids is None:
             cursor.execute(
-                "SELECT m.*, g.death, "
+                "SELECT m.*, g.death, COALESCE(g.fitnessScore, 0.0) AS fitnessScore, "
                 "       COALESCE(p.camouflage, 0.5) AS camouflage, "
                 "       COALESCE(p.size, 1.0) AS size, "
                 "       COALESCE(h.life_stage, 'adult') AS life_stage, "
@@ -248,7 +285,7 @@ class MobInteractions:
             ph = ",".join("?" for _ in nearby_ids)
             params = tuple(nearby_ids)
             cursor.execute(
-                f"SELECT m.*, g.death, "
+                f"SELECT m.*, g.death, COALESCE(g.fitnessScore, 0.0) AS fitnessScore, "
                 f"       COALESCE(p.camouflage, 0.5) AS camouflage, "
                 f"       COALESCE(p.size, 1.0) AS size, "
                 f"       COALESCE(h.life_stage, 'adult') AS life_stage, "
@@ -298,6 +335,7 @@ class MobInteractions:
                 "alive": not is_dead,
                 "life_stage": m.get("life_stage") or "adult",
                 "energy": m.get("energy", 0.0),
+                "fitnessScore": m.get("fitnessScore", 0.0) or 0.0,
             })
 
         # mob_self
@@ -314,6 +352,10 @@ class MobInteractions:
             "herd": phys.get("herd", 0.5),
             "vision": phys.get("vision", 20.0),
         }
+        genes = self.db_conn.cursor()
+        genes.execute("SELECT COALESCE(fitnessScore, 0.0) AS fitnessScore FROM mob_genes WHERE mob_id = ?", (mob_id,))
+        gene_row = genes.fetchone()
+        mob_self["fitnessScore"] = gene_row["fitnessScore"] if gene_row else 0.0
 
         import websockets
         try:
@@ -522,33 +564,13 @@ class MobInteractions:
         health = self.mob_manager.get_mob_health(target_id)
         if health.get("health", 1.0) <= 0:
             now = time.time()
-            cursor.execute(
-                "UPDATE mob_genes SET death = ? WHERE mob_id = ?",
-                (now, target_id),
-            )
-            # fitnessScore at predation death: lifespan * (1 + offspring)
-            target_health = self.mob_manager.get_mob_health(target_id)
-            target_age  = target_health.get("age", 0.0)
-            target_max  = target_health.get("max_age", 500.0)
-            offspring_count = cursor.execute(
-                "SELECT COUNT(*) FROM family_tree WHERE parent_a_id=? OR parent_b_id=?",
-                (target_id, target_id),
-            ).fetchone()[0]
-            lifespan_frac = min(1.0, target_age / max(target_max, 1.0))
-            fitness = round(lifespan_frac * (1 + offspring_count), 4)
-            cursor.execute(
-                "UPDATE mob_genes SET fitnessScore = ? WHERE mob_id = ?",
-                (fitness, target_id),
-            )
+            fitness = self._finalize_death(target_id, now)
             # Keep is_active=1 briefly so predators can see and eat the carcass;
             # metabolism loop will set is_active=0 after it's been eaten or times out.
             self.db_conn.commit()
-            # Initialise carcass meat pool so multiple predators can feed.
-            self._apply_carcass_meat(target_id)
-            self.db_conn.commit()
             logger.info(
                 f"Mob {target_id} died cause=predation killer={mob_id} "
-                f"fitness={fitness} offspring={offspring_count}"
+                f"fitness={fitness}"
             )
 
         self._record_interaction(mob_id, target_id, "ATTACK", "HIT",
@@ -706,20 +728,11 @@ class MobInteractions:
         gen_b = row_b["generation"] if row_b else 0
         child_generation = max(gen_a, gen_b) + 1
 
-        if mob_type == "predator":
-            min_energy = MIN_BREED_ENERGY_PREDATOR
-            breed_cost = BREED_ENERGY_COST_PREDATOR
-        else:
-            min_energy = MIN_BREED_ENERGY
-            breed_cost = BREED_ENERGY_COST
+        breed_cost = BREED_ENERGY_COST_PREDATOR if mob_type == "predator" else BREED_ENERGY_COST
 
-        if h_a.get("energy", 0) < min_energy:
+        if not _is_breedable_health(h_a):
             return None
-        if h_b.get("energy", 0) < min_energy:
-            return None
-        if h_a.get("life_stage", "adult") != "adult":
-            return None
-        if h_b.get("life_stage", "adult") != "adult":
+        if not _is_breedable_health(h_b):
             return None
 
         p_a = self.mob_manager.get_mob_physical(parent_a_id)
@@ -864,32 +877,7 @@ class MobInteractions:
             # Death check
             if new_health <= 0:
                 now_ts = time.time()
-                cursor.execute(
-                    "UPDATE mob_genes SET death = ? WHERE mob_id = ?",
-                    (now_ts, mob_id),
-                )
-                # Initialise carcass meat pool — body still has muscle even if
-                # the mob died starved (fat=0). Done as a direct UPDATE here
-                # rather than calling _apply_carcass_meat to avoid an extra
-                # commit inside the metabolism loop.
-                cursor.execute(
-                    "UPDATE mob_health SET fat = MAX(fat, ?) WHERE mob_id = ?",
-                    (CARCASS_MEAT_BASE, mob_id),
-                )
-                # fitnessScore: lifespan fraction * (1 + offspring count).
-                # Proxy for selection pressure — longer-lived mobs that bred get higher scores.
-                offspring_count = cursor.execute(
-                    "SELECT COUNT(*) FROM family_tree WHERE parent_a_id=? OR parent_b_id=?",
-                    (mob_id, mob_id),
-                ).fetchone()[0]
-                lifespan_frac = min(1.0, new_age / max(max_age, 1.0))
-                fitness = round(lifespan_frac * (1 + offspring_count), 4)
-                cursor.execute(
-                    "UPDATE mob_genes SET fitnessScore = ? WHERE mob_id = ?",
-                    (fitness, mob_id),
-                )
-                if hasattr(self.server, "remove_from_spatial_index"):
-                    self.server.remove_from_spatial_index(mob_id)
+                fitness = self._finalize_death(mob_id, now_ts)
                 if new_age >= max_age:
                     cause = f"old_age age={new_age:.1f}/{max_age:.1f}"
                 elif damage > 0:
@@ -898,7 +886,18 @@ class MobInteractions:
                     cause = "unknown"
                 logger.info(
                     f"Mob {mob_id} died cause={cause} health={new_health:.1f} "
-                    f"fitness={fitness} offspring={offspring_count}"
+                    f"fitness={fitness}"
+                )
+            else:
+                offspring_count = self._offspring_count(mob_id)
+                fitness = self._live_fitness_score({
+                    "life_stage": life_stage,
+                    "energy": new_energy,
+                    "health": new_health,
+                }, offspring_count)
+                cursor.execute(
+                    "UPDATE mob_genes SET fitnessScore = ? WHERE mob_id = ?",
+                    (fitness, mob_id),
                 )
 
         self.db_conn.commit()
