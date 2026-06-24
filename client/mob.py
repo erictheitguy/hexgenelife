@@ -152,7 +152,7 @@ class Mob:
     def record_error(self, error_code: str, action: dict | None = None):
         """Write a server error and its action context into brain memory for next tick."""
         self.brain.memory["last_error"] = {"code": error_code, "action": action}
-        action_type = action.get("type") if action else None
+        action_type = action.get("type") or action.get("action") if action else None
 
         # Per-target breed cooldown: skip this partner for a few ticks so we
         # don't immediately re-pick them and burn another BREED_FAILED.
@@ -162,6 +162,15 @@ class Mob:
                 from client.brain_registry import BREED_FAIL_COOLDOWN_TICKS
                 cooldowns = self.brain.memory.setdefault("breed_cooldown", {})
                 cooldowns[target_id] = BREED_FAIL_COOLDOWN_TICKS
+
+        if error_code in {"TARGET_NOT_FOUND", "CARCASS_EMPTY"} and action_type == "EAT_MOB":
+            target_id = (action.get("payload") or {}).get("targetId")
+            self.brain.memory.pop("eat_target", None)
+            self.brain.memory["carcass_lock_ticks"] = 0
+            if target_id:
+                from client.brain_registry import CARCASS_TARGET_COOLDOWN_TICKS
+                cooldowns = self.brain.memory.setdefault("carcass_cooldown", {})
+                cooldowns[target_id] = CARCASS_TARGET_COOLDOWN_TICKS
 
         self.logger.warning(f"Action error recorded: {error_code} (action={action_type})")
 

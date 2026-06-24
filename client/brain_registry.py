@@ -20,6 +20,7 @@ logger = logging.getLogger("BrainRegistry")
 
 ATTACK_RANGE = 3.0
 CARCASS_LOCK_TICKS = 4
+CARCASS_TARGET_COOLDOWN_TICKS = 5
 # Mirror of server.mob_interactions.MIN_BREED_ENERGY — if these drift,
 # the brain may pick partners the server rejects with BREED_FAILED.
 MIN_BREED_ENERGY = 40.0
@@ -72,6 +73,37 @@ GRASS_HERD_SUPPRESS_THRESHOLD = 2.0
 # Tiles below this are ignored when computing the grass movement vector,
 # preventing tiny residual grass from anchoring mobs to a depleted area.
 GRASS_SEEK_MIN = 1.0
+
+
+def _visible_mobs(memory):
+    look_data = memory.get("last_look", {})
+    if not isinstance(look_data, dict):
+        return []
+    mobs = look_data.get("mobs", [])
+    return mobs if isinstance(mobs, list) else []
+
+
+def _visible_mob_by_id(memory, mob_id):
+    return next((m for m in _visible_mobs(memory) if m.get("mobId") == mob_id), None)
+
+
+def _tick_cooldowns(memory, key):
+    cooldowns = memory.get(key)
+    if not cooldowns:
+        return set()
+    for target_id in list(cooldowns):
+        cooldowns[target_id] -= 1
+        if cooldowns[target_id] <= 0:
+            cooldowns.pop(target_id, None)
+    if not cooldowns:
+        memory.pop(key, None)
+        return set()
+    return set(cooldowns)
+
+
+def _set_cooldown(memory, key, target_id, ticks):
+    if target_id:
+        memory.setdefault(key, {})[target_id] = ticks
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -158,7 +190,7 @@ def evaluate_danger(matrix, memory, outputs, mob_state):
     Otherwise continue (second output).
     """
     look_data = memory.get("last_look", {})
-    visible_mobs = look_data.get("mobs", [])
+    visible_mobs = _visible_mobs(memory)
     mob_type = mob_state.get("mob_type", "prey")
 
     # Prey should be wary of predators
@@ -239,7 +271,7 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
     mob_type = mob_state.get("mob_type", "prey")
 
     tiles = look_data.get("tiles", [])
-    visible_mobs = look_data.get("mobs", [])
+    visible_mobs = _visible_mobs(memory)
 
     # Grass level at the mob's current position (nearest visible tile)
     local_grass = 0.0
@@ -439,8 +471,7 @@ def evaluate_attack_target(matrix, memory, outputs, mob_state):
     without a kill.  When the focused prey is out of vision but focus is still
     live, last_prey_pos is repopulated so evaluate_movement continues pursuit.
     """
-    look_data = memory.get("last_look", {})
-    visible_mobs = look_data.get("mobs", [])
+    visible_mobs = _visible_mobs(memory)
 
     # Decay focus each tick. action_attack refreshes ticks_remaining whenever
     # an attack is actually emitted against the focused mob.
@@ -483,7 +514,7 @@ def evaluate_attack_target(matrix, memory, outputs, mob_state):
         # the nearest visible prey, so evaluate_movement heads toward / holds
         # near it instead of reverting to random wander.
         anchor = None
-        if focus:
+        if focus and focus.get("ticks_remaining", 0) > 2:
             anchor = dict(focus["position"])
         elif in_sight:
             nearest_seen = min(in_sight, key=lambda m: m.get("distance", 999))
@@ -564,6 +595,26 @@ def action_attack(matrix, memory, outputs, mob_state):
         return evaluate_movement(matrix, memory, outputs, mob_state)
 
     target_id = target["mobId"]
+    current = _visible_mob_by_id(memory, target_id)
+    if current is None:
+        memory.pop("attack_target", None)
+        memory.pop("target_in_range", None)
+        focus = memory.get("focus_target")
+        if focus and focus.get("mobId") == target_id:
+            focus["ticks_remaining"] = min(focus.get("ticks_remaining", 0), 2)
+        return evaluate_movement(matrix, memory, outputs, mob_state)
+    if not current.get("alive", True):
+        memory.pop("attack_target", None)
+        memory.pop("target_in_range", None)
+        memory["eat_target"] = current
+        memory["carcass_lock_ticks"] = CARCASS_LOCK_TICKS
+        return evaluate_eat_carcass(matrix, memory, ["action_eat_mob", "evaluate_movement"], mob_state)
+    if current.get("mob_type") != "prey" or current.get("distance", 999) > ATTACK_RANGE:
+        memory["attack_target"] = current
+        memory["target_in_range"] = False
+        return evaluate_movement(matrix, memory, outputs, mob_state)
+
+    target = current
     target_pos = dict(target.get("position", {"x": 0, "y": 0}))
     focus = memory.get("focus_target")
     if focus and focus.get("mobId") == target_id:
@@ -588,13 +639,14 @@ def evaluate_eat_carcass(matrix, memory, outputs, mob_state):
     Routes to first output (action_eat_mob) if a dead prey is within ATTACK_RANGE.
     Routes to second output (evaluate_hunt) otherwise.
     """
-    look_data = memory.get("last_look", {})
-    visible_mobs = look_data.get("mobs", [])
+    visible_mobs = _visible_mobs(memory)
+    cooldown_ids = _tick_cooldowns(memory, "carcass_cooldown")
 
     # Detect any visible dead prey — action_eat_mob handles moving to it
     dead_prey = [m for m in visible_mobs
                  if m.get("mob_type") == "prey"
-                 and not m.get("alive", True)]
+                 and not m.get("alive", True)
+                 and m.get("mobId") not in cooldown_ids]
 
     if dead_prey:
         closest = min(dead_prey, key=lambda m: m.get("distance", 999))
@@ -617,6 +669,17 @@ def action_eat_mob(matrix, memory, outputs, mob_state):
     if not target:
         return evaluate_movement(matrix, memory, outputs, mob_state)
 
+    target_id = target.get("mobId")
+    current = _visible_mob_by_id(memory, target_id)
+    if (current is None
+            or current.get("mob_type") != "prey"
+            or current.get("alive", True)):
+        memory.pop("eat_target", None)
+        memory["carcass_lock_ticks"] = 0
+        _set_cooldown(memory, "carcass_cooldown", target_id, CARCASS_TARGET_COOLDOWN_TICKS)
+        return evaluate_movement(matrix, memory, outputs, mob_state)
+
+    target = current
     # Give a little tolerance to improve consume conversion after a kill.
     eat_range = ATTACK_RANGE + 1.0
     if target.get("distance", 999) > eat_range:
@@ -687,20 +750,9 @@ def find_partner(matrix, memory, outputs, mob_state):
     last_look = memory.get("last_look", {})
     mobs = last_look.get("mobs", []) if isinstance(last_look, dict) else []
 
-    # Tick down per-target breed cooldown (set by Mob.record_error on BREED_FAILED).
-    breed_cooldown = memory.get("breed_cooldown")
-    if breed_cooldown:
-        for k in list(breed_cooldown):
-            breed_cooldown[k] -= 1
-            if breed_cooldown[k] <= 0:
-                breed_cooldown.pop(k, None)
-        if not breed_cooldown:
-            memory.pop("breed_cooldown", None)
-    cooldown_ids = set(breed_cooldown or ())
+    cooldown_ids = _tick_cooldowns(memory, "breed_cooldown")
 
-    # 2.4 — filter candidates. Missing life_stage/energy fields default to
-    # "allow" so unit tests that omit them still pass; in production LOOK_RESULT
-    # always carries both fields and the gate becomes strict.
+    # 2.4 — filter candidates using the live server-side fitness gate.
     my_type = mob_state.get("mob_type", "")
     vision = mob_state.get("vision", 10.0)
     candidates = [
@@ -709,8 +761,7 @@ def find_partner(matrix, memory, outputs, mob_state):
         and m.get("alive") is True
         and m.get("distance", float("inf")) <= vision
         and m.get("mobId") not in cooldown_ids
-        and m.get("life_stage", "adult") == "adult"
-        and m.get("energy", float("inf")) >= MIN_BREED_ENERGY
+        and m.get("fitnessScore", 0.0) > 0.0
     ]
 
     # 2.5 — no candidates
@@ -719,9 +770,9 @@ def find_partner(matrix, memory, outputs, mob_state):
         next_node = outputs[1] if len(outputs) > 1 else (outputs[0] if outputs else None)
         return {"matrix": matrix, "next": next_node}
 
-    # 2.6 — store closest candidate, route to first output
-    closest = min(candidates, key=lambda m: m.get("distance", float("inf")))
-    memory["breed_target"] = closest
+    # 2.6 — store best candidate, route to first output
+    best = max(candidates, key=lambda m: (m.get("fitnessScore", 0.0), -m.get("distance", float("inf"))))
+    memory["breed_target"] = best
     next_node = outputs[0] if outputs else None
     return {"matrix": matrix, "next": next_node}
 
@@ -739,9 +790,21 @@ def action_breed(matrix, memory, outputs, mob_state):
     if target is None:
         return evaluate_movement(matrix, memory, outputs, mob_state)
 
-    if target["distance"] <= ATTACK_RANGE:
+    target_id = target.get("mobId")
+    current = _visible_mob_by_id(memory, target_id)
+    if (current is None
+            or current.get("alive") is not True
+            or current.get("mob_type") != mob_state.get("mob_type")
+            or current.get("fitnessScore", 0.0) <= 0.0):
         memory.pop("breed_target", None)
-        return {"action": "BREED_MOB", "payload": {"targetId": target["mobId"]}}
+        if current is None:
+            _set_cooldown(memory, "breed_cooldown", target_id, 1)
+        return evaluate_movement(matrix, memory, outputs, mob_state)
+
+    if current.get("distance", float("inf")) <= ATTACK_RANGE:
+        memory.pop("breed_target", None)
+        return {"action": "BREED_MOB", "payload": {"targetId": current["mobId"]}}
     else:
-        tp = target["position"]
+        memory["breed_target"] = current
+        tp = current["position"]
         return {"action": "MOVE_MOB", "payload": {"targetLocation": {"x": int(tp["x"]), "y": int(tp["y"])}}}

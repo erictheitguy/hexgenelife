@@ -57,6 +57,7 @@ def _mob_entry(mob_id="mob_a", mob_type="prey", distance=2.0, alive=True):
         "alive": alive,
         "position": {"x": distance, "y": 0.0},
         "size": 1.0,
+        "fitnessScore": 1.0,
     }
 
 
@@ -222,6 +223,7 @@ def valid_mob_list(draw):
             "alive": True,
             "position": {"x": distances[i], "y": 0.0},
             "size": 1.0,
+            "fitnessScore": 1.0,
         }
         for i in range(n)
     ]
@@ -274,6 +276,7 @@ def no_valid_partner_scenario(draw):
                 "alive": True,
                 "position": {"x": 1.0, "y": 0.0},
                 "size": 1.0,
+                "fitnessScore": 1.0,
             }
             for i in range(n)
         ]
@@ -289,6 +292,7 @@ def no_valid_partner_scenario(draw):
                 "alive": False,  # dead
                 "position": {"x": 1.0, "y": 0.0},
                 "size": 1.0,
+                "fitnessScore": 1.0,
             }
             for i in range(n)
         ]
@@ -303,6 +307,7 @@ def no_valid_partner_scenario(draw):
                 "alive": True,
                 "position": {"x": 2.0, "y": 0.0},
                 "size": 1.0,
+                "fitnessScore": 1.0,
             }
         ]
         life_stage = draw(st.sampled_from(["infant", "juvenile", "elder", ""]))
@@ -376,6 +381,7 @@ def breed_target_in_range(draw):
         "alive": True,
         "position": {"x": distance, "y": 0.0},
         "size": 1.0,
+        "fitnessScore": 1.0,
     }
 
 
@@ -389,7 +395,7 @@ class TestPBTActionBreedInRange(unittest.TestCase):
     @settings(max_examples=100)
     def test_breed_mob_emitted_and_target_cleared(self, target):
         func = get_function("action_breed")
-        memory = {"breed_target": target}
+        memory = {"breed_target": target, "last_look": {"mobs": [target]}}
         mob_state = _mob_state()
 
         result = func([], memory, [], mob_state)
@@ -416,6 +422,7 @@ def breed_target_out_of_range(draw):
         "alive": True,
         "position": position,
         "size": 1.0,
+        "fitnessScore": 1.0,
     }
 
 
@@ -429,13 +436,16 @@ class TestPBTActionBreedOutOfRange(unittest.TestCase):
     @settings(max_examples=100)
     def test_move_mob_emitted_toward_partner(self, target):
         func = get_function("action_breed")
-        memory = {"breed_target": target}
+        memory = {"breed_target": target, "last_look": {"mobs": [target]}}
         mob_state = _mob_state()
 
         result = func([], memory, [], mob_state)
 
         self.assertEqual(result["action"], "MOVE_MOB")
-        self.assertEqual(result["payload"]["targetLocation"], target["position"])
+        self.assertEqual(result["payload"]["targetLocation"], {
+            "x": int(target["position"]["x"]),
+            "y": int(target["position"]["y"]),
+        })
 
 
 # ---------------------------------------------------------------------------

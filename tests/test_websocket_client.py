@@ -602,6 +602,20 @@ class TestErrorFeedback(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(err["code"], "VALIDATION_FAILED")
         self.assertIsNone(err["action"])
 
+    def test_record_error_cools_down_stale_carcass(self):
+        """TARGET_NOT_FOUND on EAT_MOB clears carcass state and cools that target."""
+        self.mob.brain.memory["eat_target"] = {"mobId": "mob_dead"}
+        self.mob.brain.memory["carcass_lock_ticks"] = 3
+
+        self.mob.record_error(
+            "TARGET_NOT_FOUND",
+            {"type": "EAT_MOB", "payload": {"targetId": "mob_dead"}},
+        )
+
+        self.assertNotIn("eat_target", self.mob.brain.memory)
+        self.assertEqual(self.mob.brain.memory["carcass_lock_ticks"], 0)
+        self.assertIn("mob_dead", self.mob.brain.memory["carcass_cooldown"])
+
     async def test_unattributable_error_does_not_raise(self):
         """ERROR for an unknown mob is handled gracefully (logs a warning, no crash)."""
         self.client._current_acting_mob = None  # nothing acting
