@@ -24,10 +24,6 @@ CARCASS_TARGET_COOLDOWN_TICKS = 5
 # Mirror of server.mob_interactions.MIN_BREED_ENERGY — if these drift,
 # the brain may pick partners the server rejects with BREED_FAILED.
 MIN_BREED_ENERGY = 40.0
-# Mirror of server.mob_interactions.MIN_BREED_ENERGY_PREDATOR. Predators need
-# deeper reserves to breed; keeping this in sync stops the brain from emitting
-# BREED_MOB the server rejects and curbs predator overshoot.
-MIN_BREED_ENERGY_PREDATOR = 65.0
 # Ticks a partner is skipped after a BREED_FAILED against them.
 BREED_FAIL_COOLDOWN_TICKS = 5
 # Ticks a predator stays committed to a specific attacked prey before

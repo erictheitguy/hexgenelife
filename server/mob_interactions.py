@@ -81,14 +81,11 @@ DEFAULT_AGING_RATE = 0.125
 BREED_ENERGY_COST = 20.0
 # Minimum energy to breed (prey)
 MIN_BREED_ENERGY = 40.0
-# Predators pay more to breed and require deeper reserves — apex predators
-# breed slowly in nature and we want the population to grow only when prey
-# is abundant.
 # Predator reproduction is an ecological brake outside the live fitness gate:
-# predators use the same breedable/not-breedable fitness semantics as prey, but
-# pay a larger post-success energy cost.
+# predators use the same breedable/not-breedable fitness semantics as prey
+# (_is_breedable_health, gated on MIN_BREED_ENERGY), but pay a larger
+# post-success energy cost so apex populations grow only when prey is abundant.
 BREED_ENERGY_COST_PREDATOR = 55.0
-MIN_BREED_ENERGY_PREDATOR = 65.0
 
 
 def _is_breedable_health(health: dict) -> bool:
