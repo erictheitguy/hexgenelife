@@ -73,6 +73,8 @@ GRASS_HERD_SUPPRESS_THRESHOLD = 2.0
 # Tiles below this are ignored when computing the grass movement vector,
 # preventing tiny residual grass from anchoring mobs to a depleted area.
 GRASS_SEEK_MIN = 1.0
+# Minimum grass on the server-nearest tile before the client emits EAT_GRASS.
+GRASS_EAT_FLOOR = GRASS_SEEK_MIN
 
 
 def _visible_mobs(memory):
@@ -286,14 +288,15 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
     # balance; this only tilts it toward foraging when there's nothing to eat
     # underfoot. Emergent result: a few prey heading for ungrazed tiles pull the
     # rest along via the (reduced but live) cohesion vector.
-    if local_grass < GRASS_HERD_SUPPRESS_THRESHOLD:
+    depleted_local_grass = local_grass < GRASS_HERD_SUPPRESS_THRESHOLD
+    if depleted_local_grass:
         herd *= 0.5
 
     # --- Grass vector: toward highest-grass visible tile above seek minimum ---
     gvx, gvy = 0.0, 0.0
     if tiles:
         best = max(tiles, key=lambda t: t.get("grass", 0))
-        if best.get("grass", 0) > GRASS_SEEK_MIN:
+        if best.get("grass", 0) >= GRASS_SEEK_MIN:
             dx, dy = best["centerX"] - cx, best["centerY"] - cy
             d = math.sqrt(dx*dx + dy*dy) or 1
             gvx, gvy = dx/d, dy/d
@@ -399,8 +402,13 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
             memory["wander_steps"] = wander_steps - 1
         bx, by = graze_dir_x, graze_dir_y
     else:
-        bx = gvx * (1.0 - herd) + hvx * herd
-        by = gvy * (1.0 - herd) + hvy * herd
+        grass_weight = 1.0 - herd
+        herd_weight = herd
+        if depleted_local_grass and (gvx != 0 or gvy != 0):
+            grass_weight = max(grass_weight, 0.85)
+            herd_weight = min(herd_weight, 0.15)
+        bx = gvx * grass_weight + hvx * herd_weight
+        by = gvy * grass_weight + hvy * herd_weight
         # Normalize blend
         bd = math.sqrt(bx*bx + by*by) or 1
         bx, by = bx/bd, by/bd
@@ -417,7 +425,7 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
 
 @register("action_eat")
 def action_eat(matrix, memory, outputs, mob_state):
-    """Emit EAT_GRASS if the server-nearest tile has grass; otherwise move to a grass tile.
+    """Emit EAT_GRASS if the server-nearest tile has viable grass; otherwise move to grass.
 
     The server's EAT_GRASS handler picks the single tile whose center is
     closest to the mob's position and rejects with NO_GRASS if its grass is 0.
@@ -432,14 +440,14 @@ def action_eat(matrix, memory, outputs, mob_state):
         return {"action": "EAT_GRASS", "payload": {}}
 
     server_nearest = min(tiles, key=lambda t: t.get("distance", 999))
-    if server_nearest.get("grass", 0) > 0:
+    if server_nearest.get("grass", 0) >= GRASS_EAT_FLOOR:
         return {"action": "EAT_GRASS", "payload": {}}
 
-    grass_tiles = [t for t in tiles if t.get("grass", 0) > 0]
+    grass_tiles = [t for t in tiles if t.get("grass", 0) >= GRASS_EAT_FLOOR]
     if not grass_tiles:
         return evaluate_movement(matrix, memory, outputs, mob_state)
 
-    nearest_grass = min(grass_tiles, key=lambda t: t.get("distance", 999))
+    nearest_grass = max(grass_tiles, key=lambda t: (t.get("grass", 0), -t.get("distance", 999)))
     return {"action": "MOVE_MOB", "payload": {
         "targetLocation": {"x": int(nearest_grass["centerX"]), "y": int(nearest_grass["centerY"])}
     }}
