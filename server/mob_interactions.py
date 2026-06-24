@@ -84,7 +84,10 @@ MIN_BREED_ENERGY = 40.0
 # Predators pay more to breed and require deeper reserves — apex predators
 # breed slowly in nature and we want the population to grow only when prey
 # is abundant.
-BREED_ENERGY_COST_PREDATOR = 40.0
+# Predator reproduction is an ecological brake outside the live fitness gate:
+# predators use the same breedable/not-breedable fitness semantics as prey, but
+# pay a larger post-success energy cost.
+BREED_ENERGY_COST_PREDATOR = 55.0
 MIN_BREED_ENERGY_PREDATOR = 65.0
 
 
