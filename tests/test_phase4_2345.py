@@ -283,17 +283,38 @@ class TestBrainRegistry(unittest.TestCase):
         self.assertEqual(result["next"], "action_eat_mob")
         self.assertGreater(memory.get("carcass_lock_ticks", 0), 0)
 
-    def test_predator_breed_gate_requires_strong_reserves(self):
+    def test_predator_breed_gate_uses_shared_fitness_semantics(self):
+        """Predators share the prey breeding gate: fitnessScore drives the route.
+
+        The old predator-only client gate (energy/fat/recent-feeding) was
+        removed so fitnessScore > 0 has one meaning for both species. A live
+        fitnessScore of 0 means not breedable regardless of raw reserves.
+        """
         func = get_function("evaluate_breed_energy")
+
+        # fitnessScore == 0 → server says not breedable → route away from breeding.
         res = func([], {}, ["find_partner", "evaluate_hunt"], {
             "mob_type": "predator",
-            "energy": 46.0,
-            "fat": 10.0,
+            "energy": 90.0,
+            "fat": 30.0,
             "health": 95.0,
             "life_stage": "adult",
             "hunger": 5.0,
+            "fitnessScore": 0.0,
         })
         self.assertEqual(res["next"], "evaluate_hunt")
+
+        # fitnessScore > 0 → breedable → route to partner search.
+        res = func([], {}, ["find_partner", "evaluate_hunt"], {
+            "mob_type": "predator",
+            "energy": 90.0,
+            "fat": 30.0,
+            "health": 95.0,
+            "life_stage": "adult",
+            "hunger": 5.0,
+            "fitnessScore": 0.5,
+        })
+        self.assertEqual(res["next"], "find_partner")
 
 
 # -----------------------------------------------------------------------
