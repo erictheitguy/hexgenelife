@@ -48,6 +48,8 @@ PREDATOR_SWITCH_RATIO = 4.0
 # When a predator has no visible prey and no last_prey_pos memory, distances
 # beyond this from origin trigger a homeward wander bias instead of random.
 PREDATOR_EDGE_RADIUS = 25.0
+FLEE_MIN_PERSISTENCE_TICKS = 6
+FLEE_STEP_MULTIPLIER = 3.0
 
 # Size-class preference for predator targeting.  Mirrors server's
 # LIFE_STAGE_RANK so the brain can decline futile fights — the server still
@@ -252,8 +254,8 @@ def evaluate_movement(matrix, memory, outputs, mob_state):
         dist = math.sqrt(dx * dx + dy * dy) or 1
         fx, fy = dx / dist, dy / dist
         memory["graze_dir_x"], memory["graze_dir_y"] = fx, fy
-        memory["wander_steps"] = int(max(_persistence, 6))
-        step = max(3.0, _speed * 3)
+        memory["wander_steps"] = int(max(_persistence, FLEE_MIN_PERSISTENCE_TICKS))
+        step = max(3.0, _speed * FLEE_STEP_MULTIPLIER)
         move_x = int(cx + fx * step)
         move_y = int(cy + fy * step)
         memory.pop("threat", None)
