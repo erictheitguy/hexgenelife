@@ -576,6 +576,42 @@ class TestMobClass(unittest.TestCase):
         action4 = mob.get_tick_action()
         self.assertIsNotNone(action4)
 
+    def test_record_error_attack_already_dead_drops_focus(self):
+        """ATTACK on a just-killed prey should drop the stale attack focus so
+        the predator pivots to the carcass instead of re-swinging at the body."""
+        mob = Mob("test_pred", mob_type="predator")
+        mob.brain.memory["attack_target"] = {"mobId": "prey_1"}
+        mob.brain.memory["target_in_range"] = True
+        mob.brain.memory["focus_target"] = {"mobId": "prey_1", "ticks_remaining": 9}
+
+        mob.record_error("TARGET_ALREADY_DEAD",
+                         {"type": "ATTACK_MOB", "payload": {"targetId": "prey_1"}})
+
+        self.assertNotIn("attack_target", mob.brain.memory)
+        self.assertNotIn("target_in_range", mob.brain.memory)
+        self.assertNotIn("focus_target", mob.brain.memory)
+
+    def test_record_error_attack_already_dead_keeps_other_focus(self):
+        """A dead-target error for one prey must not clear focus on a different prey."""
+        mob = Mob("test_pred", mob_type="predator")
+        mob.brain.memory["focus_target"] = {"mobId": "prey_2", "ticks_remaining": 9}
+
+        mob.record_error("TARGET_ALREADY_DEAD",
+                         {"type": "ATTACK_MOB", "payload": {"targetId": "prey_1"}})
+
+        self.assertEqual(mob.brain.memory["focus_target"]["mobId"], "prey_2")
+
+    def test_record_error_eat_mob_missing_sets_carcass_cooldown(self):
+        """EAT_MOB on a vanished carcass should cool that target down."""
+        mob = Mob("test_pred", mob_type="predator")
+        mob.brain.memory["eat_target"] = {"mobId": "prey_1"}
+
+        mob.record_error("TARGET_NOT_FOUND",
+                         {"type": "EAT_MOB", "payload": {"targetId": "prey_1"}})
+
+        self.assertNotIn("eat_target", mob.brain.memory)
+        self.assertIn("prey_1", mob.brain.memory["carcass_cooldown"])
+
 
 # -----------------------------------------------------------------------
 # Phase 4.3 — Metabolism & Energy
@@ -732,25 +768,34 @@ class TestCombatAndCarnivory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(h_att2["energy"], h_att1["energy"] - 2.5)
 
     async def test_eat_mob_increases_fat_and_removes_carcass(self):
-        """Predator eating dead mob gains fat and carcass is deleted."""
+        """Predator eating dead mob gains fat; carcass deletes when picked clean.
+
+        Multi-bite carcasses persist across bites; this test sets the dead
+        prey's meat pool low enough (just one bite's worth) so a single
+        EAT_MOB drains it and triggers deletion.
+        """
+        from server.mob_interactions import BITE_MEAT_DRAIN
         self.server._ensure_client_mob("pred", mob_type="predator")
         self.server._ensure_client_mob("dead_prey", mob_type="prey")
-        
+
         cursor = self.server.db_conn.cursor()
         now = self.server._get_current_timestamp()
         cursor.execute("UPDATE mob_genes SET death = ? WHERE mob_id = 'mob_dead_prey'", (now,))
+        # One bite drains a carcass holding less than BITE_MEAT_DRAIN of meat.
+        cursor.execute("UPDATE mob_health SET fat = ? WHERE mob_id = 'mob_dead_prey'",
+                       (BITE_MEAT_DRAIN - 1.0,))
         cursor.execute("UPDATE mobs SET position = '{\"x\":0,\"y\":0}' WHERE mob_id = 'mob_pred'")
         cursor.execute("UPDATE mobs SET position = '{\"x\":1,\"y\":1}' WHERE mob_id = 'mob_dead_prey'")
         self.server.db_conn.commit()
-        
+
         h_pred1 = self.server._get_mob_health("mob_pred")
-        
+
         mock_ws = AsyncMock()
         await self.server._handle_eat_mob({"mobId": "mob_pred", "targetId": "mob_dead_prey"}, mock_ws)
-        
+
         h_pred2 = self.server._get_mob_health("mob_pred")
         self.assertGreater(h_pred2["fat"], h_pred1["fat"])
-        
+
         # Carcass should be gone
         cursor.execute("SELECT 1 FROM mobs WHERE mob_id = 'mob_dead_prey'")
         self.assertIsNone(cursor.fetchone())
@@ -767,8 +812,8 @@ class TestCombatAndCarnivory(unittest.IsolatedAsyncioTestCase):
             self.assertIn("TARGET_NOT_DEAD", mock_err.call_args[0][1])
 
     async def test_eat_mob_energy_gain_bounded(self):
-        """A single kill must give exactly ENERGY_FROM_MOB energy (capped at 100)."""
-        from server.mob_interactions import ENERGY_FROM_MOB, FAT_FROM_MOB
+        """A single bite must give exactly ENERGY_FROM_MOB energy (capped at 100)."""
+        from server.mob_interactions import ENERGY_FROM_MOB, FAT_FROM_MOB, CARCASS_MEAT_BASE
         self.server._ensure_client_mob("pred_e", mob_type="predator")
         self.server._ensure_client_mob("prey_e", mob_type="prey")
 
@@ -776,6 +821,9 @@ class TestCombatAndCarnivory(unittest.IsolatedAsyncioTestCase):
         # Start predator at low energy so the full gain is visible
         cursor.execute("UPDATE mob_health SET energy = 10.0, fat = 0.0 WHERE mob_id = 'mob_pred_e'")
         cursor.execute("UPDATE mob_genes SET death = 1.0 WHERE mob_id = 'mob_prey_e'")
+        # Carcass needs meat for the predator to gain from a bite.
+        cursor.execute("UPDATE mob_health SET fat = ? WHERE mob_id = 'mob_prey_e'",
+                       (CARCASS_MEAT_BASE,))
         self.server.db_conn.commit()
 
         mock_ws = AsyncMock()
@@ -786,18 +834,25 @@ class TestCombatAndCarnivory(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(h["fat"], FAT_FROM_MOB, places=2)
 
     async def test_eat_mob_does_not_trigger_breed_threshold_from_low_energy(self):
-        """A predator at minimum viable energy should not clear breed threshold from one kill alone."""
-        from server.mob_interactions import ENERGY_FROM_MOB
-        MIN_BREED_ENERGY = 40.0
+        """A predator at minimum viable energy should not clear breed threshold from one bite alone."""
+        from server.mob_interactions import (
+            ENERGY_FROM_MOB,
+            MIN_BREED_ENERGY,
+            CARCASS_MEAT_BASE,
+        )
         self.server._ensure_client_mob("pred_b", mob_type="predator")
         self.server._ensure_client_mob("prey_b", mob_type="prey")
 
         cursor = self.server.db_conn.cursor()
-        # Start just below breed threshold minus full gain
+        # Predators and prey share one breed-energy floor (MIN_BREED_ENERGY)
+        # after the live-fitness unification. Start just below that floor minus
+        # the full bite gain so a single bite cannot cross it.
         start_energy = max(0.0, MIN_BREED_ENERGY - ENERGY_FROM_MOB - 1.0)
         cursor.execute("UPDATE mob_health SET energy = ?, fat = 0.0 WHERE mob_id = 'mob_pred_b'",
                        (start_energy,))
         cursor.execute("UPDATE mob_genes SET death = 1.0 WHERE mob_id = 'mob_prey_b'")
+        cursor.execute("UPDATE mob_health SET fat = ? WHERE mob_id = 'mob_prey_b'",
+                       (CARCASS_MEAT_BASE,))
         self.server.db_conn.commit()
 
         mock_ws = AsyncMock()
@@ -805,11 +860,11 @@ class TestCombatAndCarnivory(unittest.IsolatedAsyncioTestCase):
 
         h = self.server._get_mob_health("mob_pred_b")
         self.assertLess(h["energy"], MIN_BREED_ENERGY,
-                        "A single kill from low energy must not cross the breed threshold")
+                        "A single bite from low energy must not cross the breed threshold")
 
     async def test_eat_mob_satiation_halves_fat_gain(self):
         """Fat gain is halved when predator fat already exceeds the satiation threshold."""
-        from server.mob_interactions import FAT_FROM_MOB, FAT_SATIATION_THRESHOLD
+        from server.mob_interactions import FAT_FROM_MOB, FAT_SATIATION_THRESHOLD, CARCASS_MEAT_BASE
         self.server._ensure_client_mob("pred_s", mob_type="predator")
         self.server._ensure_client_mob("prey_s", mob_type="prey")
 
@@ -817,6 +872,8 @@ class TestCombatAndCarnivory(unittest.IsolatedAsyncioTestCase):
         cursor.execute("UPDATE mob_health SET energy = 50.0, fat = ? WHERE mob_id = 'mob_pred_s'",
                        (FAT_SATIATION_THRESHOLD + 1.0,))
         cursor.execute("UPDATE mob_genes SET death = 1.0 WHERE mob_id = 'mob_prey_s'")
+        cursor.execute("UPDATE mob_health SET fat = ? WHERE mob_id = 'mob_prey_s'",
+                       (CARCASS_MEAT_BASE,))
         self.server.db_conn.commit()
 
         mock_ws = AsyncMock()

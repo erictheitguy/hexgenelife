@@ -17,6 +17,21 @@ from client.mob_brain import MobBrain
 LOGS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 
+# Server errors that mean "I lost a race for a target that was valid at LOOK
+# time" rather than a client bug: between this mob's LOOK snapshot and its
+# action landing, another mob killed / ate / retired the target. In a
+# tick-synchronized sim with many predators per carcass these are expected
+# contention, self-correct on the next LOOK, and are driven by the brain's
+# cooldown/focus handling — not something an operator needs warned about. They
+# are logged at DEBUG so they don't flood the logs; genuine errors stay WARNING.
+# Keyed by (errorCode, commandType).
+BENIGN_RACE_ERRORS = frozenset({
+    ("TARGET_ALREADY_DEAD", "ATTACK_MOB"),
+    ("TARGET_NOT_FOUND", "EAT_MOB"),
+    ("CARCASS_EMPTY", "EAT_MOB"),
+    ("TARGET_NOT_FOUND", "BREED_MOB"),
+})
+
 
 class Mob:
     """Represents a single mob managed by this client."""
@@ -172,7 +187,22 @@ class Mob:
                 cooldowns = self.brain.memory.setdefault("carcass_cooldown", {})
                 cooldowns[target_id] = CARCASS_TARGET_COOLDOWN_TICKS
 
-        self.logger.warning(f"Action error recorded: {error_code} (action={action_type})")
+        # An ATTACK landed on a prey that died this tick (raced to the kill by
+        # another predator). The corpse is no longer a valid attack target, so
+        # drop the stale attack focus and let evaluate_eat_carcass pick the
+        # fresh carcass up next tick instead of re-swinging at the body.
+        if error_code == "TARGET_ALREADY_DEAD" and action_type == "ATTACK_MOB":
+            target_id = (action.get("payload") or {}).get("targetId")
+            self.brain.memory.pop("attack_target", None)
+            self.brain.memory.pop("target_in_range", None)
+            focus = self.brain.memory.get("focus_target")
+            if focus and focus.get("mobId") == target_id:
+                self.brain.memory.pop("focus_target", None)
+
+        if (error_code, action_type) in BENIGN_RACE_ERRORS:
+            self.logger.debug(f"Target race: {error_code} (action={action_type})")
+        else:
+            self.logger.warning(f"Action error recorded: {error_code} (action={action_type})")
 
     def set_decision_tree(self, tree: dict):
         """Update the brain's decision tree structure."""

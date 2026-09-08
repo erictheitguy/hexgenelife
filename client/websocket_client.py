@@ -7,7 +7,7 @@ import random
 import sys
 import time
 
-from client.mob import Mob
+from client.mob import Mob, BENIGN_RACE_ERRORS
 
 import os
 
@@ -577,7 +577,13 @@ class ClientState:
         elif message_type == "ERROR":  # Gap #6 — handle server error responses
             code = payload.get("errorCode", "UNKNOWN")
             msg = payload.get("errorMessage", "")
-            logger.warning(f"Server error [{code}]: {msg}")
+            command = payload.get("commandType")
+            if (code, command) in BENIGN_RACE_ERRORS:
+                # Lost a race for a contested target — expected contention, not
+                # an error. Logged at DEBUG so it doesn't flood the logs.
+                logger.debug(f"Target race [{code}] on {command}: {msg}")
+            else:
+                logger.warning(f"Server error [{code}]: {msg}")
         elif message_type == "HEX_CREATED":
             self._process_hex_created(payload)
         elif message_type == "LOOK_RESULT":

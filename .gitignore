@@ -79,3 +79,14 @@ vendor/
 coverage/
 .cache/
 tmp/
+
+# AI agents
+claude.md
+.claude/
+.agent.md
+CLAUDE.md
+AGENT.md
+
+# Temp
+server/game_state*
+server/game_state.db

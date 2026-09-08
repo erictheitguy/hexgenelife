@@ -87,6 +87,37 @@ class TestClientState(unittest.TestCase):
         # Should not raise
         self.state.handle_incoming_message(msg)
 
+    def test_genuine_error_logged_at_warning(self):
+        """A non-race ERROR should still surface at WARNING level."""
+        msg = {
+            "type": "ERROR",
+            "payload": {"errorCode": "MOB_NOT_FOUND", "errorMessage": "gone",
+                        "commandType": "LOOK"},
+        }
+        with self.assertLogs("ClientManager", level="WARNING") as cm:
+            self.state.handle_incoming_message(msg)
+        self.assertTrue(any("Server error [MOB_NOT_FOUND]" in line for line in cm.output))
+
+    def test_benign_target_race_not_logged_at_warning(self):
+        """Contested-target races should be demoted below WARNING."""
+        for code, command in (
+            ("TARGET_ALREADY_DEAD", "ATTACK_MOB"),
+            ("TARGET_NOT_FOUND", "EAT_MOB"),
+            ("CARCASS_EMPTY", "EAT_MOB"),
+            ("TARGET_NOT_FOUND", "BREED_MOB"),
+        ):
+            msg = {
+                "type": "ERROR",
+                "payload": {"errorCode": code, "errorMessage": "race",
+                            "commandType": command},
+            }
+            with self.assertLogs("ClientManager", level="DEBUG") as cm:
+                self.state.handle_incoming_message(msg)
+            self.assertFalse(
+                any("Server error" in line for line in cm.output),
+                f"{code}/{command} should not log a WARNING-style 'Server error' line",
+            )
+
     def test_initial_state_has_brain_functions_key(self):
         """Initial ClientState must have an empty brain_functions dict."""
         s = self.state.get_state()
